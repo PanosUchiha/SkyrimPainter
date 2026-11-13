@@ -112,19 +112,29 @@ namespace Live
 
 	bool CanvasOnScreen(std::uint32_t a_canvas, bool a_portrait, float a_screenW, float a_screenH, float a_out[4][2])
 	{
-		auto* camera = RE::Main::WorldRootCamera();
+		// the game's own view matrix and viewport (as TrueHUD uses them). The call's result is ignored on
+		// purpose: it is false for points off the edge of the screen, and up close a canvas corner often is.
+		static const REL::Relocation<float(*)[4]>       worldToCam{ RELOCATION_ID(519579, 406126) };
+		static const REL::Relocation<RE::NiRect<float>*> viewPort{ RELOCATION_ID(519618, 406160) };
 		auto* geom = CanvasShape(Canvas(a_canvas));
-		if (!camera || !geom) {
+		if (!geom) {
 			return false;
 		}
 		const RE::NiTransform world = geom->world;
 		for (int i = 0; i < 4; ++i) {
-			float x = 0.0f, y = 0.0f, z = 0.0f;
-			if (!camera->WorldPtToScreenPt3(Corner(world, a_portrait, i), x, y, z, 1e-5f) || z < 0.0f) {
+			float x = 0.0f, y = 0.0f, depth = 0.0f;
+			RE::NiCamera::WorldPtToScreenPt3(worldToCam.get(), *viewPort.get(), Corner(world, a_portrait, i), x, y, depth, 1e-5f);
+			if (depth < 0.0f) {
 				return false;  // behind the camera
 			}
 			a_out[i][0] = x * a_screenW;
 			a_out[i][1] = (1.0f - y) * a_screenH;
+		}
+		static bool logged = false;
+		if (!logged) {
+			logged = true;
+			spdlog::info("Live: canvas on screen at ({:.0f},{:.0f}) ({:.0f},{:.0f}) ({:.0f},{:.0f}) ({:.0f},{:.0f})", a_out[0][0], a_out[0][1], a_out[1][0], a_out[1][1], a_out[2][0],
+				a_out[2][1], a_out[3][0], a_out[3][1]);
 		}
 		return true;
 	}

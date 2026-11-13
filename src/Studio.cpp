@@ -589,7 +589,9 @@ namespace Studio
 					ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollWithMouse);
 			ImGui::SetCursorScreenPos(ImVec2(0, 0));
 			ImGui::InvisibleButton("##worldcanvas", io.DisplaySize, ImGuiButtonFlags_MouseButtonLeft);
-			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsWindowHovered();
+			// (the press makes this button active on the same frame - hovering must still count then)
+			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+			                     ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 			if (s.ok) {
 				if (hovered && io.MouseWheel != 0.0f) {
 					g_pressure = std::clamp(g_pressure + 0.05f * io.MouseWheel, 0.05f, 1.0f);
@@ -1286,20 +1288,9 @@ namespace Studio
 			}
 		}
 
-		// the cursor: over the canvas only the brush's footprint (drawn by DrawCanvas); elsewhere the brush in hand
-		if (g_open && (g_brush.type >= 0 || g_rag) && !looking) {
+		// the cursor: over the canvas the brush's footprint takes its place; anywhere else it is the normal cursor
+		if (g_open && g_overCanvas && (g_brush.type >= 0 || g_rag) && !looking) {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_None);
-			if (!g_overCanvas) {
-				if (g_rag) {  // a bit of cloth
-					auto*        fg = ImGui::GetForegroundDrawList();
-					const ImVec2 c = io.MousePos;
-					const float  r = Theme::S(14.0f);
-					fg->AddQuadFilled(c + ImVec2(-r, -r * 0.4f), c + ImVec2(r * 0.6f, -r), c + ImVec2(r, r * 0.5f), c + ImVec2(-r * 0.5f, r), IM_COL32(205, 196, 176, 235));
-					fg->AddQuad(c + ImVec2(-r, -r * 0.4f), c + ImVec2(r * 0.6f, -r), c + ImVec2(r, r * 0.5f), c + ImVec2(-r * 0.5f, r), IM_COL32(120, 110, 95, 255), 1.0f);
-				} else {
-					DrawBrushPic(ImGui::GetForegroundDrawList(), io.MousePos, Theme::S(150.0f), &g_brush);
-				}
-			}
 		}
 		if (stepAway && g_open) {
 			StepAway();
