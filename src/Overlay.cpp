@@ -239,6 +239,7 @@ namespace Overlay
 			case 0x39: return ImGuiKey_Space;  // studio: hold to pan the canvas
 			case 0x32: return ImGuiKey_M;      // studio: look at the painting in a mirror
 			case 0x0B: return ImGuiKey_0;      // studio: Ctrl+0 fits the canvas again
+			case 0x3B: return ImGuiKey_F1;     // studio: the painter's guide
 			default: return ImGuiKey_None;
 			}
 		}

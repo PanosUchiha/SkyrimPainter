@@ -81,6 +81,7 @@ namespace Studio
 		ImVec2                    g_lastMouse{ -1.0f, -1.0f };
 		bool                      g_overCanvas = false;
 		bool                      g_hideHud = false;  // Tab: only the canvas stays up
+		bool                      g_guide = false;    // the painter's guide is open (F1)
 		bool                      g_layoutReset = true;
 		// the hand (Krita: pressure, opacity, smoothing) and the view (zoom, pan, mirror)
 		float                     g_body = 1.0f;    // paint thickness: thin glaze .. full body
@@ -756,7 +757,139 @@ namespace Studio
 			ImGui::Dummy(ImVec2(0, Theme::S(4)));
 			Theme::TextColoredWrapped(Theme::InkSoft(),
 				"Click a brush to pick it up, a paint to load it (a second paint mixes in), the bare palette to put a mix down, the rag "
-				"to wipe the brush. A clean brush blends the wet paint. Ctrl + click on the canvas takes up the colour there.");
+				"to wipe the brush. A clean brush blends the wet paint. Ctrl + click on the canvas takes up the colour there. F1: the guide.");
+		}
+
+		// ---- the painter's guide: everything the studio can do, in the studio
+		struct GuideLine
+		{
+			const char* what;  // a key or an action ("" = a plain paragraph)
+			const char* text;
+		};
+
+		void GuideTab(const char* a_name, const char* a_intro, std::initializer_list<GuideLine> a_lines)
+		{
+			if (!ImGui::BeginTabItem(a_name)) {
+				return;
+			}
+			ImGui::Dummy(ImVec2(0, Theme::S(4)));
+			if (a_intro && *a_intro) {
+				Theme::TextColoredWrapped(Theme::InkSoft(), a_intro);
+				ImGui::Dummy(ImVec2(0, Theme::S(6)));
+			}
+			const float col = Theme::S(150.0f);
+			const float wrap = ImGui::GetContentRegionAvail().x;
+			for (const auto& l : a_lines) {
+				if (!*l.what) {
+					ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap);
+					ImGui::TextUnformatted(l.text);
+					ImGui::PopTextWrapPos();
+				} else {
+					ImGui::TextColored(ImVec4(0.92f, 0.80f, 0.52f, 1.0f), "%s", l.what);
+					ImGui::SameLine(col);
+					ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap - col);
+					ImGui::TextUnformatted(l.text);
+					ImGui::PopTextWrapPos();
+				}
+				ImGui::Dummy(ImVec2(0, Theme::S(3)));
+			}
+			ImGui::EndTabItem();
+		}
+
+		void DrawGuide()
+		{
+			if (!g_guide) {
+				return;
+			}
+			const ImVec2 screen = ImGui::GetIO().DisplaySize;
+			ImGui::SetNextWindowPos(screen * 0.5f, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+			ImGui::SetNextWindowSize(ImVec2(Theme::S(640.0f), Theme::S(520.0f)), ImGuiCond_Appearing);
+			if (Theme::BeginWindow("##guide", nullptr)) {
+				ImGui::TextColored(ImVec4(0.92f, 0.85f, 0.68f, 1.0f), "The Painter's Guide");
+				ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - Theme::S(90.0f));
+				if (Theme::Button("Close", ImVec2(Theme::S(90.0f), 0))) {
+					g_guide = false;
+				}
+				ImGui::Separator();
+				ImGui::BeginChild("##guidebody", ImVec2(0, 0), false);
+				if (ImGui::BeginTabBar("##guidetabs")) {
+					GuideTab("Starting", "Paint the way a painter does: from the back to the front. Block in the big shapes on the underpainting, then add layers for the middle and the details.",
+						{
+							{ "Pick up a brush", "Click one of the brushes below the palette. Click it again to put it down." },
+							{ "Load it", "Click a paint on the palette. Click a second paint to mix it into what's on the brush." },
+							{ "Paint", "Drag on the canvas with the left mouse button." },
+							{ "Keep a mix", "With paint on the brush, click a bare spot on the palette to put the mix down there. Ctrl + click a mix to scrape it off." },
+							{ "Clean the brush", "Click the rag." },
+							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later." },
+						});
+					GuideTab("Brushes", "Each brush leaves its own mark. The outline on the canvas shows where it will touch and how big it is.",
+						{
+							{ "Detail round", "Fine lines, edges, highlights, signatures." },
+							{ "Round", "General painting and soft shapes." },
+							{ "Filbert", "Rounded flat: blending, petals, leaves, skin." },
+							{ "Wide flat", "Skies, washes, large areas. It lies across the way you move it." },
+							{ "[  and  ]", "A smaller or larger brush of the same kind." },
+							{ "Never runs out", "A loaded brush keeps its paint until you wipe it on the rag. Each brush keeps its own paint when you put it down." },
+							{ "Dirty brush", "Dragging through wet paint picks some of it up, so colours shift as you work, like the real thing." },
+						});
+					GuideTab("Your hand", "The three sliders under the palette.",
+						{
+							{ "Touch", "How hard you press. Light: thin, broken strokes that only catch the weave of the canvas. Heavy: the bristles splay and lay the paint down thick. The mouse wheel over the canvas changes it too." },
+							{ "Paint", "How thick the paint is. Thin is a glaze you can see through, however much you go over it in one stroke. Full covers what's under it." },
+							{ "Steady", "A steadier hand. While you paint the brush trails the cursor on a string and smooths the line; when you let go it follows through and lifts off." },
+							{ "Strokes", "Every stroke starts light and comes up to full pressure, and thins out as the brush lifts. A quick flick lays down less paint." },
+						});
+					GuideTab("Blending", "Wet paint on the layer you're painting mixes the way pigments do: blue and yellow make green.",
+						{
+							{ "Wet into wet", "Paint over wet paint on the same layer and the two mix on the canvas." },
+							{ "Blend", "Wipe the brush on the rag, then drag the clean brush through the paint to soften and smear it." },
+							{ "Lift paint", "Take the rag (click it with an empty hand, or press E) and rub the canvas to wipe paint off the layer. Press harder to take more." },
+							{ "Take a colour", "Ctrl + click on the canvas dips the brush into the colour there." },
+							{ "Dry layers", "Paint on the layers underneath counts as dry: it won't mix into what you paint on top." },
+						});
+					GuideTab("Layers", "Up to 8 layers, front at the top of the list. You always paint on the highlighted one.",
+						{
+							{ "New / Del", "Add a layer above the current one, or remove the current one." },
+							{ "Up / Down", "Move the current layer nearer the front or the back." },
+							{ "Eye box", "Show or hide a layer." },
+							{ "Layer opacity", "How strongly the whole layer shows." },
+							{ "Glaze", "The layer tints and deepens what is under it instead of covering it: shadows, warm light, colour washes." },
+							{ "Only over paint", "You can only paint where the layer already has paint: shading inside a shape without going over its edge." },
+							{ "Scrape this layer", "Takes all the paint off the current layer (Undo brings it back)." },
+						});
+					GuideTab("Seeing", "Paint what's in front of you: the world stays in view around the canvas.",
+						{
+							{ "Right mouse (hold)", "Look around: the mouse turns your view instead of moving the cursor." },
+							{ "Tab", "Hide the palette and the tools; only the canvas stays." },
+							{ "Move the canvas", "Drag its top bar. Drag its bottom corner to make it bigger or smaller." },
+							{ "Ctrl + wheel", "Zoom in and out where the cursor is." },
+							{ "Middle mouse / Space", "Hold and drag to move around a zoomed-in canvas." },
+							{ "M", "See the painting in a mirror. Painters do this to catch mistakes in the drawing." },
+							{ "Step back / Ctrl+0", "The whole canvas again, the right way round." },
+							{ "Reset the layout", "Puts the canvas and the panels back where they started." },
+						});
+					GuideTab("Keys", "",
+						{
+							{ "Left mouse", "Pick up, load, paint" },
+							{ "Right mouse (hold)", "Look around" },
+							{ "Mouse wheel", "Touch (pressure)" },
+							{ "Ctrl + click", "Take the colour from the canvas" },
+							{ "Ctrl + wheel", "Zoom" },
+							{ "Middle / Space + drag", "Move the canvas" },
+							{ "[  ]", "Brush size" },
+							{ "E", "Take / put down the rag" },
+							{ "M", "Mirror" },
+							{ "Ctrl+Z / Ctrl+Y", "Undo / redo" },
+							{ "Ctrl+0", "Whole canvas" },
+							{ "Tab", "Hide the panels" },
+							{ "F1", "This guide" },
+							{ "Esc", "Close the guide, or step away from the easel" },
+						});
+					ImGui::EndTabBar();
+				}
+				ImGui::EndChild();
+			}
+			Theme::EndWindow();
 		}
 
 		bool ConfirmPopup(const char* a_id, const char* a_text, const char* a_yes)
@@ -911,6 +1044,12 @@ namespace Studio
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("Leave the painting on the easel and come back to it later (Esc)");
 				}
+				if (Theme::Button(g_guide ? "Close the guide" : "Guide", ImVec2(w, 0))) {
+					g_guide = !g_guide;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("How everything works (F1)");
+				}
 				if (Theme::Button("Reset the layout", ImVec2(w, 0))) {
 					g_layoutReset = true;
 				} else {
@@ -920,6 +1059,10 @@ namespace Studio
 			Theme::EndWindow();
 		} else {
 			g_layoutReset = false;
+		}
+
+		if (!looking) {
+			DrawGuide();
 		}
 
 		// ---- popups
@@ -988,8 +1131,15 @@ namespace Studio
 					g_pan = ImVec2(0.0f, 0.0f);
 				}
 			}
+			if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+				g_guide = !g_guide;
+			}
 			if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-				stepAway = true;
+				if (g_guide) {
+					g_guide = false;  // Esc closes the guide first
+				} else {
+					stepAway = true;
+				}
 			}
 		}
 
