@@ -1,0 +1,30 @@
+{
+  "name": "skyrimpainter",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ee12231b20c95013c6638d845d04c91559a1d1ff",
+  "dependencies": [
+    "fmt",
+    "spdlog",
+    "rapidcsv",
+    "directxtk",
+    "directxmath",
+    "xbyak",
+    "simpleini",
+    "nlohmann-json",
+    "toml11",
+    {
+      "name": "imgui",
+      "features": [
+        "dx11-binding"
+      ]
+    },
+    "stb"
+  ],
+  "overrides": [
+    {
+      "name": "imgui",
+      "version": "1.90",
+      "port-version": 4
+    }
+  ]
+}
