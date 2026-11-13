@@ -351,11 +351,18 @@ namespace Studio
 					g_paint.SetLayerVisible(i, vis);
 				}
 				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Show / hide this layer");
+					ImGui::SetTooltip("Show / hide this layer (a hidden layer shows nothing you paint on it)");
 				}
 				ImGui::SameLine();
-				if (ImGui::Selectable(layers[i].name.c_str(), g_paint.Current() == i, 0, ImVec2(a_w - ImGui::GetFrameHeight() - U(8), 0))) {
+				const std::string label = layers[i].visible ? layers[i].name : layers[i].name + "  (hidden)";
+				if (!layers[i].visible) {
+					ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+				}
+				if (ImGui::Selectable(label.c_str(), g_paint.Current() == i, 0, ImVec2(a_w - ImGui::GetFrameHeight() - U(8), 0))) {
 					g_paint.SetCurrent(i);
+				}
+				if (!layers[i].visible) {
+					ImGui::PopStyleColor();
 				}
 				ImGui::PopID();
 			}
@@ -526,6 +533,13 @@ namespace Studio
 				} else if (!g_rag && g_brush.type < 0) {
 					Hint("Pick up a brush first: click one below the palette");
 				} else {
+					// painting on a hidden layer would leave no mark you can see: show it again
+					if (const int cur = g_paint.Current(); !g_paint.Layers()[cur].visible) {
+						g_paint.SetLayerVisible(cur, true);
+						static std::string msg;
+						msg = fmt::format("\"{}\" was hidden - it's showing again", g_paint.Layers()[cur].name);
+						Hint(msg.c_str());
+					}
 					Paint::StrokeStyle style;
 					style.body = g_body;
 					style.lift = g_rag;
@@ -1020,7 +1034,12 @@ namespace Studio
 				for (auto& l : doc->layers) {
 					layers.push_back({ l.name, l.visible, l.opacity, std::move(l.px), static_cast<Paint::Blend>(l.blend), l.lockAlpha });
 				}
-				g_paint.SetCurrent(static_cast<int>(layers.size()) - 1);
+				// carry on with the top layer that is showing (painting on a hidden one shows nothing)
+				int top = static_cast<int>(layers.size()) - 1;
+				while (top > 0 && !layers[top].visible) {
+					--top;
+				}
+				g_paint.SetCurrent(top);
 				g_paint.RecompositeAll();
 				g_paint.MarkSaved();
 				spdlog::info("Studio: continuing {} ({} layer(s))", Art::ToUtf8(a_work.dir), layers.size());
@@ -1085,6 +1104,14 @@ namespace Studio
 		}
 		if (!g_closeUp) {
 			DrawWorldCanvas(looking);
+			if (ImGui::GetTime() < g_hintUntil) {  // (the close-up shows hints in its title bar)
+				auto*        fg = ImGui::GetForegroundDrawList();
+				const ImVec2 ts = ImGui::CalcTextSize(g_hint.c_str());
+				const ImVec2 p((screen.x - ts.x) * 0.5f, screen.y * 0.06f);
+				const float  pad = Theme::S(10.0f);
+				fg->AddRectFilled(p - ImVec2(pad, pad * 0.6f), p + ts + ImVec2(pad, pad * 0.6f), IM_COL32(10, 9, 8, 190), Theme::S(6.0f));
+				fg->AddText(p, IM_COL32(242, 222, 170, 255), g_hint.c_str());
+			}
 		}
 
 		// No backdrop: the world stays in view so you can paint what's in front of you. The canvas sits on
