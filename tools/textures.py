@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates SkyrimPainter's textures (uncompressed BGRA DDS with mipmaps) into
+"""Generates SkyrimPainter's own textures (the blank canvas and a flat normal map) (uncompressed BGRA DDS with mipmaps) into
 Data/textures/SkyrimPainter/. Everything is procedural, so the mod ships no third-party art.
 
 Usage: python3 tools/textures.py
@@ -46,19 +46,6 @@ def smooth_noise(h, w, cells_y, cells_x):
     return np.asarray(Image.fromarray((small * 255).astype(np.uint8)).resize((w, h), Image.BICUBIC), np.float32) / 255.0
 
 
-def wood(size, base, dark, rings=22, wobble=0.6):
-    h = w = size
-    y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-    n = smooth_noise(h, w, 6, 3) * wobble + smooth_noise(h, w, 24, 6) * 0.15
-    t = (x / w * rings + n * 6.0) % 1.0  # grain runs along v (vertical)
-    grain = np.power(np.abs(np.sin(t * np.pi)), 3.0)
-    fine = smooth_noise(h, w, 128, 16) * 0.25
-    k = np.clip(grain * 0.75 + fine, 0, 1)[..., None]
-    base = np.array(base, np.float32)
-    dark = np.array(dark, np.float32)
-    return base * (1 - k) + dark * k
-
-
 def main():
     # ---- canvas: plain white primed canvas with a fine weave (1024 x 768 = the painting's 4:3)
     # (keep in step with Studio.cpp MakeBlank, which starts a new painting the same way)
@@ -68,23 +55,6 @@ def main():
     threads = (rng.random((1, w)) - 0.5) * 3.0 + (rng.random((h, 1)) - 0.5) * 3.0  # uneven threads
     canvas = np.stack([248 + weave + threads, 247 + weave + threads, 244 + weave + threads], axis=2)
     save("canvas_blank", canvas)
-
-    # ---- frame woods (the easel's texture comes from tools/convert_models.py)
-    frames = {
-        "frame_darkoak": ((92, 58, 34), (48, 28, 14)),
-        "frame_honeyoak": ((198, 140, 70), (140, 88, 36)),
-        "frame_walnut": ((120, 80, 52), (70, 44, 26)),
-        "frame_ebony": ((44, 36, 32), (18, 14, 12)),
-        "frame_birch": ((226, 210, 178), (186, 164, 126)),
-    }
-    for name, (base, dark) in frames.items():
-        save(name, wood(256, base, dark, rings=30))
-    # gilded: warm gold with soft highlights
-    n = smooth_noise(256, 256, 8, 8)
-    g = smooth_noise(256, 256, 40, 40)
-    k = (n * 0.7 + g * 0.3)[..., None]
-    gold = np.array((214, 168, 72), np.float32) * (0.75 + 0.45 * k)
-    save("frame_gilded", gold)
 
     # ---- flat normal map, alpha 0 = no specular (matte)
     flat = np.zeros((4, 4, 4), np.uint8)

@@ -1,8 +1,8 @@
 # SkyrimPainter
 
 An SKSE plugin for **Skyrim Special Edition / Anniversary Edition** that lets you actually paint.
-Set up an easel, open the studio, paint on the canvas with brushes, mix your own colours on the palette,
-then hang the finished painting on any wall.
+Set up an easel, put a canvas on it, paint with real-feeling brushes, mix your own colours on the palette, then hang
+the finished painting on any wall.
 
 Inspired by *Painting in Skyrim* (Iceburg and Blargargy), which let you craft ready-made paintings at an easel.
 Here you paint the picture yourself. No assets or code from that mod are used.
@@ -26,47 +26,53 @@ Here you paint the picture yourself. No assets or code from that mod are used.
 ### 1. Craft your kit (tanning rack)
 | Item | Cost (test values) |
 |---|---|
-| Blank Canvas | 1 Leather |
 | Easel | 1 Leather |
+| Blank Canvas | 1 Leather |
 | Painter's Palette | 1 Leather |
-| Paints (every colour) | 1 Leather |
+| Paints | 1 Leather |
 
 ### 2. Set up the easel
-With an **Easel** in your pack, **drop a Blank Canvas** from your inventory. The easel stands up in front of you
-with the canvas on it, facing you.
+**Use the Easel in your inventory**: the inventory closes and a preview of the easel follows your aim.
+Mouse wheel or Left/Right turns it (Shift: finer), left-click sets it up, right-click or Esc cancels.
 
-### 3. Paint
-**Activate the easel** (you need the Palette and the Paints in your pack). The studio opens:
+### 3. Put a canvas on
+**Activate the easel**. Its menu lets you:
+- put on a **blank canvas, landscape or portrait** (needs a Blank Canvas)
+- put one of your **finished paintings** back on to work on it more
+- **turn the canvas** between landscape and portrait (the painting turns with it)
+- **paint** (needs the Painter's Palette and the Paints)
+- take the canvas off, scrape a painting off for good (frees its slot), or fold the easel back up
 
-- **Canvas** in the middle (1024 x 768).
-- **Tools**: Brush (B), Eraser (E, rubs back to bare canvas), Fill (F), Pick a colour from the canvas (G).
-- **Brush**: size (also the mouse wheel over the canvas, or `[` `]`), opacity, softness.
-- **Undo / Redo**: Ctrl+Z / Ctrl+Y (25 steps). Clear canvas.
-- **Palette**: 12 paints. **Mixing**: put a colour in each of the two wells (click a well, then a colour, or drag a
-  colour onto a well), set how much of the second colour goes in, then **Use** it or **Add to palette**.
-  Colours mix like paint (blue + yellow = green). Mixed colours stay on your palette (right-click one to scrape it off).
+### 4. Paint
+The studio shows the canvas with your **palette** on the right, paint already on it, and four **brushes** (detail round,
+round, filbert, wide flat) with a **rag**. Everything is done with the **right mouse button**:
+- right-click a **brush** to pick it up
+- right-click a **paint** to load the brush; right-click a second paint and it **mixes on the brush** like real paint
+  (blue and yellow make green - Spectral.js)
+- right-click the **bare palette** to put your mix down there (it stays on your palette)
+- **hold right-click on the canvas and move** to paint
+- right-click the **rag** to wipe the brush clean
 
-Buttons at the bottom:
-- **Step away** (Esc): the painting stays on the easel - you can see it on the canvas in the world - and you can carry on later.
-- **Pack up**: the easel and the canvas go back into your pack (the painting is scraped off).
-- **Finish painting**: name it. The Painting goes into your pack and the easel folds back up.
+Painting feels like paint: the bristles leave streaks, the brush runs out of paint and goes dry (load it again),
+wet paint on the layer mixes with the paint you drag through it, and **pressure** (slider, or the mouse wheel while
+painting) changes how wide and how thick the stroke is.
 
-### 4. Hang it
-**Drop the Painting** from your inventory (with several, you pick which one). Aim at a wall:
+**Layers**: the painting is built back to front - start with the background layer, add layers for what's in front.
+Each layer can be shown/hidden, moved, made see-through or scraped. Undo / Redo: Ctrl+Z / Ctrl+Y.
 
-| Action | Keys |
-|---|---|
-| Hang | Left-click |
-| Size | Mouse wheel or Left / Right |
-| Frame (Dark Oak, Honey Oak, Walnut, Ebony, Birch, Gilded) | Shift + wheel or Shift + Left / Right |
-| Distance from the wall | Up / Down |
-| Cancel | Right-click or Esc |
+- **Step away** (Esc) leaves the painting on the easel - you see it on the canvas in the world - to carry on later.
+- **Finish painting**: name it. It is saved as a DDS and becomes a **Painting** in your pack; the easel is free again.
 
-**Activate a hung painting** for its menu: size, frame, move, take down (back into your pack).
+### 5. Hang it
+**Use the Painting in your inventory** and aim at a wall: wheel or Left/Right sizes it, Up/Down moves it towards or
+away from the wall, left-click hangs it. **Activate a hung painting** to resize, move or take it down.
+
+To change a finished painting, take it down, put it on an easel and paint again: finishing it **replaces its DDS**
+(and the copies on the walls). You can have **50 paintings** at once.
 
 ### Where your paintings go
-Every finished painting is also saved as a PNG in
-`Documents\My Games\Skyrim Special Edition\SkyrimPainter\Paintings`.
+Each painting is kept (layers and a flat PNG) in `Documents\My Games\Skyrim Special Edition\SkyrimPainter\Paintings`,
+work in progress in `...\SkyrimPainter\InProgress`. The game textures are in `Data\textures\SkyrimPainter`.
 
 ---
 
@@ -83,10 +89,10 @@ come out as the `SkyrimPainter` artifact and on the `dist` branch.
 The meshes, textures and the plugin file are made by scripts (Python 3 + numpy + Pillow):
 
 ```
-python tools/convert_models.py ...  # easel, brush and palette from the source models (see the script for the steps)
-python tools/textures.py            # blank canvas, frame textures
-python tools/meshes.py              # placeholder canvas item and frame meshes (+ tools/bounds.json)
+python tools/convert_models.py ...  # easel, canvas, brush, palette meshes + UI pictures (see the script for the steps)
+python tools/textures.py            # the blank canvas
 python tools/make_esp.py            # SkyrimPainter.esp + src/Forms.h
+python tools/gen_spectral.py spectral.js   # src/SpectralData.h from Spectral.js
 ```
 
 ---
@@ -96,9 +102,10 @@ GPL-3.0 (see `LICENSE.txt`). Built on the plumbing of [Hearthframe](https://gith
 (same author, same license).
 
 Third-party parts: CommonLibSSE-NG (GPL-3.0 with exceptions), Dear ImGui (MIT), stb (MIT / public domain),
+Spectral.js colour mixing by Ronald van Wijnen (MIT, ported to C++ in `src/Spectral.cpp`),
 Cinzel and Inter fonts (SIL Open Font License 1.1).
 
 Art: the easel is "Easel / Easel with painting" by Every 3D and the paint brush is "CC0 Paint Brush 3" by plaggy
 (both CC BY 4.0); the palette is "Round Artist Palette" by LUMI-Studio (CGTrader royalty free, paint cleaned off).
-They are converted with `tools/convert_models.py` (details in `CREDITS.txt`). The canvas item and the wall frames
-are placeholders generated by the scripts in `tools/`.
+They are converted with `tools/convert_models.py` (details in `CREDITS.txt`); the canvas is the one from the
+easel model.

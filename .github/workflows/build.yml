@@ -96,6 +96,8 @@ jobs:
           Copy-Item SkyrimPainter.esp "$out/Data/"
           Copy-Item -Recurse Data/meshes "$out/Data/"
           Copy-Item -Recurse Data/textures "$out/Data/"
+          New-Item -ItemType Directory -Force -Path "$out/Data/SKSE/Plugins/SkyrimPainter/UI" | Out-Null
+          Copy-Item Data/SKSE/Plugins/SkyrimPainter/UI/* "$out/Data/SKSE/Plugins/SkyrimPainter/UI/"
           Copy-Item assets/fonts/* "$out/Data/SKSE/Plugins/SkyrimPainter/Fonts/"
           Copy-Item LICENSE.txt "$out/Data/SKSE/Plugins/SkyrimPainter/"   # GPL-3.0: the full license ships with the mod
           Copy-Item CREDITS.txt "$out/Data/SKSE/Plugins/SkyrimPainter/"   # attribution for the easel, brush and palette

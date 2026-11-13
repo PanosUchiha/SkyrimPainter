@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""Converts the third-party models (see CREDITS.txt) into SkyrimPainter meshes and textures.
+"""Converts the third-party models (see CREDITS.txt) into SkyrimPainter's meshes, textures and UI pictures.
 
 Source files are not kept in the repository. To re-run:
-  1. Unzip "easel-easel-with-painting" (Every 3D, CC BY 4.0) and "cc0-paint-brush-3" (plaggy, CC BY 4.0).
-     Palette: "Round Artist Palette" by LUMI-Studio (CGTrader, royalty free, no AI training).
-  2. Export their FBX files to OBJ with transforms applied (assimp):
+  1. Unzip "easel-easel-with-painting" (Every 3D, CC BY 4.0) and "cc0-paint-brush-3" (plaggy, CC BY 4.0);
+     the palette is "Round Artist Palette" by LUMI-Studio (CGTrader, royalty free).
+  2. Export the FBX files to OBJ with transforms applied (assimp):
        assimp export source/easel3.fbx easel.obj -ptv
        assimp export source/PaintBrush3.fbx brush.obj -ptv
        assimp export SM_Palette_02a.fbx palette.obj -ptv
   3. Clean the paint off the palette: tools/clean_palette_texture.py (see that script).
-  4. python3 tools/convert_models.py easel <easel.obj> <easel textures dir>
-     python3 tools/convert_models.py brush <brush.obj> <brush textures dir>
-     python3 tools/convert_models.py palette <palette.obj> <clean base colour png> <clean ao png>
+  4. python3 tools/convert_models.py <easel.obj> <easel textures dir> <brush.obj> <brush textures dir>
+                                     <palette.obj> <clean palette colour png> <clean palette ao png>
 
-Writes Data/meshes/SkyrimPainter/{Easel,Item_Easel,Item_Paint,Item_Palette}.nif, their textures in
-Data/textures/SkyrimPainter/ and updates tools/bounds.json.
+The easel file holds three easels: the middle one has no canvas, the side ones do. The middle one is the
+easel; the canvas board is what the left one has extra (it is the middle one moved 130 cm). The board
+becomes the canvas: on the easel (landscape and portrait), on the wall (landscape and portrait) and the
+Blank Canvas / Painting items. Its front is the shape "SPCanvas" with 0..1 UVs (the plugin puts the
+painting there).
 
-The easel file holds three easels; the two side ones carry a canvas. The left one (Cube.036) is used.
-Its canvas front (one quad) becomes the shape "SPCanvas" with 0..1 UVs, so the plugin can put the
-painting on it. Ambient occlusion is baked into the colour; normal maps aren't used (flat normal).
+Writes Data/meshes/SkyrimPainter/*.nif, Data/textures/SkyrimPainter/{easel,brush,palette}.dds,
+Data/SKSE/Plugins/SkyrimPainter/UI/{palette,brush}.png, src/PaletteSpots.h and tools/bounds.json.
 """
 import io, json, math, os, struct, sys
 
@@ -26,11 +27,18 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from meshes import Shape, write_mesh, TEX, OUT, ROOT
+import nifwriter as nw
 
-CM_TO_UNITS = 0.7  # Skyrim: 1 unit ~ 1.43 cm
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MESHES = os.path.join(ROOT, "Data", "meshes", "SkyrimPainter")
+TEXTURES = os.path.join(ROOT, "Data", "textures", "SkyrimPainter")
+UI = os.path.join(ROOT, "Data", "SKSE", "Plugins", "SkyrimPainter", "UI")
+TEX = "textures\\SkyrimPainter\\"
+NORMAL = TEX + "flat_n.dds"
+CM = 0.7  # Skyrim: 1 unit ~ 1.43 cm
 
 
+# ------------------------------------------------------------------ reading
 def load_obj(path):
     V, VT, VN, groups, cur = [], [], [], {}, None
     for line in open(path):
@@ -54,169 +62,347 @@ def load_obj(path):
     return np.array(V), np.array(VT), np.array(VN), groups
 
 
-def to_skyrim(p):
-    """OBJ (Y up, front +Z, cm) -> Skyrim (Z up, front +Y): a proper rotation, no mirroring."""
-    x, y, z = p
-    return (-x, z, y)
+def unit(v):
+    v = np.asarray(v, float)
+    n = np.linalg.norm(v)
+    return v / n if n > 0 else v
 
 
-def build_shape(name, texture, V, VT, VN, faces, xform, uv_override=None):
-    s = Shape(name, texture)
-    tri_tangents = []
+# ------------------------------------------------------------------ building meshes
+def make_mesh(name, texture, V, VT, VN, faces, xf, rot, uv_fn=None):
+    """xf: OBJ point -> Skyrim point; rot: OBJ direction -> Skyrim direction (rotation only)."""
+    m = nw.Mesh(name, texture, NORMAL)
     for face in faces:
-        for k in range(1, len(face) - 1):  # fan-triangulate
+        for k in range(1, len(face) - 1):
             tri = [face[0], face[k], face[k + 1]]
-            P = [xform(V[a]) for a, _, _ in tri]
-            if uv_override:
-                UV = [uv_override(V[a]) for a, _, _ in tri]
-            else:
-                UV = [(VT[b][0], 1.0 - VT[b][1]) for _, b, _ in tri]  # OBJ v is up, DDS v is down
-            N = [to_skyrim(VN[c]) if c >= 0 else None for _, _, c in tri]
-            e1, e2 = np.subtract(P[1], P[0]), np.subtract(P[2], P[0])
-            fn = np.cross(e1, e2)
-            fn = fn / (np.linalg.norm(fn) or 1.0)
+            P = [np.asarray(xf(V[a]), float) for a, _, _ in tri]
+            UV = [uv_fn(V[a]) if uv_fn else (VT[b][0], 1.0 - VT[b][1]) for a, b, _ in tri]
+            e1, e2 = P[1] - P[0], P[2] - P[0]
+            fn = unit(np.cross(e1, e2))
             du1, dv1 = UV[1][0] - UV[0][0], UV[1][1] - UV[0][1]
             du2, dv2 = UV[2][0] - UV[0][0], UV[2][1] - UV[0][1]
             det = du1 * dv2 - du2 * dv1
             if abs(det) > 1e-12:
-                tg = (e1 * dv2 - e2 * dv1) / det
-                bt = (e2 * du1 - e1 * du2) / det
+                tg, bt = unit((e1 * dv2 - e2 * dv1) / det), unit((e2 * du1 - e1 * du2) / det)
             else:
                 tg, bt = np.array([1.0, 0, 0]), np.array([0, 0, -1.0])
-            tg = tg / (np.linalg.norm(tg) or 1.0)
-            bt = bt / (np.linalg.norm(bt) or 1.0)
-            base = len(s.v)
-            for i in range(3):
-                n = N[i] if N[i] is not None else tuple(fn)
-                n = tuple(np.array(n) / (np.linalg.norm(n) or 1.0))
-                s.v.append((tuple(P[i]), n, tuple(tg), tuple(bt), UV[i]))
-            # keep the winding facing the same way as the normals
-            if np.dot(fn, np.mean([s.v[base + i][1] for i in range(3)], axis=0)) < 0:
-                s.t.append((base, base + 2, base + 1))
+            Ns = [unit(rot(VN[c])) if c >= 0 else fn for _, _, c in tri]
+            base = len(m.verts)
+            for p, uv, n in zip(P, UV, Ns):
+                m.verts.append((tuple(float(x) for x in p), (float(uv[0]), float(uv[1])), tuple(float(x) for x in n),
+                                tuple(float(x) for x in tg), tuple(float(x) for x in bt)))
+            if np.dot(fn, sum(Ns)) < 0:
+                m.tris.append((base, base + 2, base + 1))
             else:
-                s.t.append((base, base + 1, base + 2))
-    return s
+                m.tris.append((base, base + 1, base + 2))
+    return m
 
 
+def bbox(meshes):
+    P = np.array([v[0] for m in meshes for v in m.verts])
+    return P.min(0), P.max(0)
+
+
+def collision(meshes, dynamic, mass=1.0, material=nw.MAT_WOOD, pad=0.0):
+    mn, mx = bbox(meshes)
+    half = tuple(float(max(0.5, (mx[i] - mn[i]) / 2 + pad)) for i in range(3))
+    center = tuple(float((mx[i] + mn[i]) / 2) for i in range(3))
+    return dict(half=half, center=center, layer=nw.LAYER_CLUTTER if dynamic else nw.LAYER_STATIC, mass=mass,
+                material=material, dynamic=dynamic)
+
+
+BOUNDS = {}
+BRUSH_TIP = (1.0, 0.0, 1.0)
+
+
+def write(stem, meshes, coll=None):
+    nw.build(os.path.join(MESHES, stem + ".nif"), "SkyrimPainter_" + stem, meshes, coll)
+    mn, mx = bbox(meshes)
+    BOUNDS[stem] = {"min": [float(x) for x in mn], "max": [float(x) for x in mx]}
+    print(f"  {stem}.nif  size {(mx - mn).round(1)}")
+
+
+# ------------------------------------------------------------------ textures
 def save_dds_dxt1(img, path, max_size):
     """DXT1 DDS with the full mip chain (Pillow writes one level; the levels are stacked here)."""
     img = img.convert("RGB")
     if max(img.size) > max_size:
-        img = img.resize((max_size, max_size * img.size[1] // img.size[0]), Image.LANCZOS)
+        s = max_size / max(img.size)
+        img = img.resize((max(4, int(img.size[0] * s)), max(4, int(img.size[1] * s))), Image.LANCZOS)
     w, h = img.size
-    levels, data = [], b""
-    cur = img
+    levels, cur = [], img
     while True:
         levels.append(cur)
-        if cur.size == (1, 1) or min(cur.size) < 4:
+        if min(cur.size) <= 4:
             break
         cur = cur.resize((max(1, cur.size[0] // 2), max(1, cur.size[1] // 2)), Image.BOX)
+    data = b""
     for lv in levels:
         buf = io.BytesIO()
         lv.save(buf, format="DDS", pixel_format="DXT1")
         data += buf.getvalue()[128:]
     hdr = b"DDS " + struct.pack("<7I", 124, 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000, h, w, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 8, 0, len(levels))
-    hdr += b"\0" * 44
-    hdr += struct.pack("<2I", 32, 0x4) + b"DXT1" + b"\0" * 20
-    hdr += struct.pack("<5I", 0x1000 | 0x8 | 0x400000, 0, 0, 0, 0)
+    hdr += b"\0" * 44 + struct.pack("<2I", 32, 0x4) + b"DXT1" + b"\0" * 20 + struct.pack("<5I", 0x1000 | 0x8 | 0x400000, 0, 0, 0, 0)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "wb").write(hdr + data)
 
 
-def bake_ao(color_path, ao_path):
-    col = np.asarray(Image.open(color_path).convert("RGB"), np.float32)
+def bake_ao(color, ao_path, strength=0.65):
+    col = np.asarray(color.convert("RGB") if isinstance(color, Image.Image) else Image.open(color).convert("RGB"), np.float32)
     if ao_path and os.path.exists(ao_path):
         ao = np.asarray(Image.open(ao_path).convert("L").resize((col.shape[1], col.shape[0])), np.float32) / 255.0
-        col = col * (0.35 + 0.65 * ao[..., None])
+        col = col * ((1 - strength) + strength * ao[..., None])
     return Image.fromarray(np.clip(col, 0, 255).astype(np.uint8))
 
 
-def bounds(shapes):
-    P = [v[0] for s in shapes for v in s.v]
-    return {"min": [min(p[i] for p in P) for i in range(3)], "max": [max(p[i] for p in P) for i in range(3)]}
+# ------------------------------------------------------------------ simple rasterizer for the UI pictures
+def raster(tris, size, tex):
+    """tris: list of (3 screen points (x, y, depth), 3 uvs, shade). Returns RGBA (transparent background)."""
+    W, H = size
+    img = np.zeros((H, W, 4), np.float32)
+    zbuf = np.full((H, W), -1e9, np.float32)
+    th, tw = tex.shape[:2]
+    for pts, uvs, shade in tris:
+        p = np.array(pts, float)
+        x0, x1 = int(max(0, np.floor(p[:, 0].min()))), int(min(W - 1, np.ceil(p[:, 0].max())))
+        y0, y1 = int(max(0, np.floor(p[:, 1].min()))), int(min(H - 1, np.ceil(p[:, 1].max())))
+        if x0 > x1 or y0 > y1:
+            continue
+        ys, xs = np.mgrid[y0:y1 + 1, x0:x1 + 1].astype(np.float32) + 0.5
+        (ax, ay, _), (bx, by, _), (cx, cy, _) = p
+        den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if abs(den) < 1e-9:
+            continue
+        w0 = ((by - cy) * (xs - cx) + (cx - bx) * (ys - cy)) / den
+        w1 = ((cy - ay) * (xs - cx) + (ax - cx) * (ys - cy)) / den
+        w2 = 1 - w0 - w1
+        inside = (w0 >= -1e-4) & (w1 >= -1e-4) & (w2 >= -1e-4)
+        z = w0 * p[0, 2] + w1 * p[1, 2] + w2 * p[2, 2]
+        sub = zbuf[y0:y1 + 1, x0:x1 + 1]
+        ok = inside & (z > sub)
+        if not ok.any():
+            continue
+        u = w0 * uvs[0][0] + w1 * uvs[1][0] + w2 * uvs[2][0]
+        v = w0 * uvs[0][1] + w1 * uvs[1][1] + w2 * uvs[2][1]
+        tx = np.clip((u % 1.0) * tw, 0, tw - 1).astype(int)
+        ty = np.clip(v * th, 0, th - 1).astype(int)
+        col = tex[ty, tx, :3] * shade
+        region = img[y0:y1 + 1, x0:x1 + 1]
+        region[ok, :3] = col[ok]
+        region[ok, 3] = 255
+        sub[ok] = z[ok]
+    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8), "RGBA")
 
 
-def easel(obj, texdir):
-    V, VT, VN, groups = load_obj(obj)
-    faces = groups["Cube.036"]
-    # the canvas front: the faces whose UVs sit in the canvas area of the atlas (u < 0.31, v < 0.44)
-    def is_canvas(face):
-        c = np.mean([VT[b] for _, b, _ in face], axis=0)
-        return c[0] < 0.31 and c[1] < 0.44
-    canvas = [f for f in faces if is_canvas(f)]
-    wood = [f for f in faces if not is_canvas(f)]
-    assert len(canvas) >= 1, "canvas faces not found"
-    # origin: floor, middle of the easel's footprint
-    used = np.array([V[a] for f in faces for a, _, _ in f])
-    cx, cz = (used[:, 0].min() + used[:, 0].max()) / 2, (used[:, 2].min() + used[:, 2].max()) / 2
-    y0 = used[:, 1].min()
-    def xf(p):
-        q = to_skyrim(((p[0] - cx) * CM_TO_UNITS, (p[1] - y0) * CM_TO_UNITS, (p[2] - cz) * CM_TO_UNITS))
-        return q
-    cp = np.array([V[a] for f in canvas for a, _, _ in f])
-    x0, x1, yb, yt = cp[:, 0].min(), cp[:, 0].max(), cp[:, 1].min(), cp[:, 1].max()
-    def canvas_uv(p):
-        # seen from the front the picture's left is OBJ -x (Skyrim +X); v = 0 at the top
-        return ((p[0] - x0) / (x1 - x0), (yt - p[1]) / (yt - yb))
-    s_wood = build_shape("SPEasel", TEX + "easel.dds", V, VT, VN, wood, xf)
-    s_canvas = build_shape("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, canvas, xf, canvas_uv)
-    print(f"easel: {len(wood)} wood faces, {len(canvas)} canvas faces; canvas {((x1 - x0) * CM_TO_UNITS):.0f} x {((yt - yb) * CM_TO_UNITS):.0f} units, "
-          f"centre {((yb + yt) / 2 - y0) * CM_TO_UNITS:.0f} units up")
-    save_dds_dxt1(bake_ao(os.path.join(texdir, "EaselBaseColor.jpg"), os.path.join(texdir, "EaselAOwithoutThePicture.png")),
-                  os.path.join(ROOT, "Data", "textures", "SkyrimPainter", "easel.dds"), 2048)
-    shapes = [s_wood, s_canvas]
-    write_mesh(os.path.join(OUT, "Easel.nif"), "SkyrimPainter_Easel", shapes)
-    write_mesh(os.path.join(OUT, "Item_Easel.nif"), "SkyrimPainter_Item_Easel", shapes)
-    return bounds(shapes)
+def ui_picture(mesh, tex_img, out_path, px_per_unit, light=(0.35, 0.45, 0.82)):
+    """Renders a mesh seen from above (Skyrim +Z): X to the right, +Y up the picture."""
+    P = np.array([v[0] for v in mesh.verts])
+    mn, mx = P.min(0), P.max(0)
+    W = int((mx[0] - mn[0]) * px_per_unit) + 8
+    H = int((mx[1] - mn[1]) * px_per_unit) + 8
+    L = unit(light)
+    tris = []
+    for a, b, c in mesh.tris:
+        vs = [mesh.verts[i] for i in (a, b, c)]
+        pts = [((v[0][0] - mn[0]) * px_per_unit + 4, (mx[1] - v[0][1]) * px_per_unit + 4, v[0][2]) for v in vs]
+        n = unit(sum(np.array(v[2]) for v in vs))
+        tris.append((pts, [v[1] for v in vs], 0.55 + 0.45 * max(0.0, float(np.dot(n, L)))))
+    img = raster(tris, (W, H), np.asarray(tex_img.convert("RGB"), np.float32))
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    img.save(out_path)
+    return img
+
+
+# ------------------------------------------------------------------ the easel and its canvas
+def easel_and_canvas(obj, texdir):
+    V, VT, VN, G = load_obj(obj)
+    middle, left = G["Cube.035"], G["Cube.036"]
+    known = {tuple(np.round(V[a], 2)) for f in middle for a, _, _ in f}
+    shift = np.array([-130.0, 0, 0])  # the left easel is the middle one moved 130 cm
+    board = [f for f in left if any(tuple(np.round(V[a] - shift, 2)) not in known for a, _, _ in f)]
+    print(f"easel: {len(middle)} faces, canvas board: {len(board)} faces")
+    pm = np.array([V[a] for f in middle for a, _, _ in f])
+    cz, y0 = (pm[:, 2].min() + pm[:, 2].max()) / 2, pm[:, 1].min()
+
+    def local(p):  # OBJ cm (Y up, front +Z), centred on the easel -> Skyrim units (Z up, front +Y), no mirroring
+        x, y, z = p[0] * CM, (p[1] - y0) * CM, (p[2] - cz) * CM
+        return (-x, z, y)
+
+    rot = lambda d: (-d[0], d[2], d[1])
+
+    atlas = bake_ao(os.path.join(texdir, "EaselBaseColor.jpg"), os.path.join(texdir, "EaselAOwithoutThePicture.png"))
+    save_dds_dxt1(atlas, os.path.join(TEXTURES, "easel.dds"), 2048)
+    easel = make_mesh("SPEasel", TEX + "easel.dds", V, VT, VN, middle, local, rot)
+    write("Easel", [easel], collision([easel], dynamic=False))
+    write("Item_Easel", [easel], collision([easel], dynamic=True, mass=5.0))
+
+    # ---- the board's frame: front normal n, right r (the viewer's right = OBJ +x), up u = n x r
+    def uvc(f):
+        return np.mean([VT[b] for _, b, _ in f], axis=0)
+    front = [f for f in board if uvc(f)[0] < 0.31 and uvc(f)[1] < 0.44]
+    rest = [f for f in board if not (uvc(f)[0] < 0.31 and uvc(f)[1] < 0.44)]
+    fp = np.array([V[a] - shift for f in front for a, _, _ in f])
+    n = unit(np.cross(fp[1] - fp[0], fp[2] - fp[0]))
+    if n[2] < 0:
+        n = -n
+    r = unit(np.array([1.0, 0, 0]) - n * n[0])
+    u = np.cross(n, r)
+    c = fp.mean(0)
+    Wd = (fp @ r).max() - (fp @ r).min()
+    Ht = (fp @ u).max() - (fp @ u).min()
+    c = c - r * (((fp - c) @ r).max() + ((fp - c) @ r).min()) / 2 * 0 - u * 0  # centre of the front quad
+    bp = np.array([V[a] - shift for f in board for a, _, _ in f])
+    dmin = ((bp - c) @ n).min()
+    print(f"canvas board: {Wd:.1f} x {Ht:.1f} cm (aspect {Wd / Ht:.3f}), {(((bp - c) @ n).max() - dmin):.1f} cm deep")
+
+    def coords(p):  # board-local (right, up, depth) in cm
+        q = np.asarray(p) - shift - c
+        return float(q @ r), float(q @ u), float(q @ n)
+
+    def turn(rr, uu, portrait):
+        return (-uu, rr) if portrait else (rr, uu)
+
+    def uv_for(portrait):
+        def uv(p):
+            rr, uu, _ = coords(p)
+            rr, uu = turn(rr, uu, portrait)
+            return (rr / Ht + 0.5, 0.5 - uu / Wd) if portrait else (rr / Wd + 0.5, 0.5 - uu / Ht)
+        return uv
+
+    def on_easel(portrait):
+        lift = (Wd - Ht) / 2 if portrait else 0.0  # the bottom edge stays on the easel's ledge
+
+        def place(p):
+            rr, uu, dd = coords(p)
+            rr, uu = turn(rr, uu, portrait)
+            return local(c + r * rr + u * (uu + lift) + n * dd)
+
+        def drot(d):
+            d = np.asarray(d)
+            rr, uu = turn(float(d @ r), float(d @ u), portrait)
+            return rot(r * rr + u * uu + n * float(d @ n))
+
+        return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
+                make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait))]
+
+    def flat(portrait):
+        def place(p):  # the front faces Skyrim +Y, back at y = 0, centred
+            rr, uu, dd = coords(p)
+            rr, uu = turn(rr, uu, portrait)
+            return (-rr * CM, (dd - dmin) * CM, uu * CM)
+
+        def drot(d):
+            d = np.asarray(d)
+            rr, uu = turn(float(d @ r), float(d @ u), portrait)
+            return (-rr, float(d @ n), uu)
+
+        return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
+                make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait))]
+
+    write("EaselCanvas_Landscape", on_easel(False))
+    write("EaselCanvas_Portrait", on_easel(True))
+    land, port = flat(False), flat(True)
+    write("WallCanvas_Landscape", land, collision(land, dynamic=False, pad=0.5))
+    write("WallCanvas_Portrait", port, collision(port, dynamic=False, pad=0.5))
+    write("Item_Canvas", land, collision(land, dynamic=True, mass=1.0))
+    return {"canvasW": Wd * CM, "canvasH": Ht * CM, "centreUp": float((c[1] - y0) * CM)}
 
 
 def brush(obj, texdir):
-    V, VT, VN, groups = load_obj(obj)
-    faces = groups.get("PaintBrush3") or next(iter(groups.values()))
-    used = np.array([V[a] for f in faces for a, _, _ in f])
-    c = (used.min(0) + used.max(0)) / 2
-    size = (used.max(0) - used.min(0)).max()
-    scale = 15.0 / size  # about 15 units (~21 cm) long
-    # lie the brush down along X, resting on the floor
-    def xf(p):
-        q = (np.array(p) - c) * scale
-        return (q[1], -q[0], q[2] - (used[:, 2].min() - c[2]) * scale)
-    s = build_shape("SPBrush", TEX + "brush.dds", V, VT, VN, faces, xf)
-    save_dds_dxt1(bake_ao(os.path.join(texdir, "PaintBrush3Albedo.png"), os.path.join(texdir, "PaintBrushAO.png")),
-                  os.path.join(ROOT, "Data", "textures", "SkyrimPainter", "brush.dds"), 1024)
-    write_mesh(os.path.join(OUT, "Item_Paint.nif"), "SkyrimPainter_Item_Paint", [s])
-    print(f"brush: {len(faces)} faces")
-    return bounds([s])
+    V, VT, VN, G = load_obj(obj)
+    faces = G.get("PaintBrush3") or next(iter(G.values()))
+    P = np.array([V[a] for f in faces for a, _, _ in f])
+    c = (P.min(0) + P.max(0)) / 2
+    scale = 15.0 / (P.max(0) - P.min(0)).max()  # ~15 units (21 cm) long
+    zmin = (P[:, 2].min() - c[2]) * scale
+
+    def xf(p):  # lies along X, on the floor (proper rotation: (x, y, z) -> (y, -x, z))
+        q = (np.asarray(p) - c) * scale
+        return (q[1], -q[0], q[2] - zmin)
+
+    rot = lambda d: (d[1], -d[0], d[2])
+    tex = bake_ao(os.path.join(texdir, "PaintBrush3Albedo.png"), os.path.join(texdir, "PaintBrushAO.png"))
+    save_dds_dxt1(tex, os.path.join(TEXTURES, "brush.dds"), 1024)
+    m = make_mesh("SPBrush", TEX + "brush.dds", V, VT, VN, faces, xf, rot)
+    write("Item_Paint", [m], collision([m], dynamic=True, mass=0.3))
+    img = ui_picture(m, tex, os.path.join(UI, "brush.png"), 34.0)
+    a = np.asarray(img)[..., 3] > 0
+    ys, xs = np.nonzero(a)
+    i = int(np.argmax(xs - ys))  # the bristle tip: the top-right end
+    global BRUSH_TIP
+    BRUSH_TIP = (xs[i] / img.size[0], ys[i] / img.size[1], img.size[0] / img.size[1])
+    print(f"  UI/brush.png {img.size}, tip at {BRUSH_TIP[:2]}")
 
 
 def palette(obj, base_png, ao_png):
-    V, VT, VN, groups = load_obj(obj)
-    faces = [f for g in groups.values() for f in g]
-    used = np.array([V[a] for f in faces for a, _, _ in f])
-    cx, cz = (used[:, 0].min() + used[:, 0].max()) / 2, (used[:, 2].min() + used[:, 2].max()) / 2
-    y0 = used[:, 1].min()
+    V, VT, VN, G = load_obj(obj)
+    faces = [f for g in G.values() for f in g]
+    P = np.array([V[a] for f in faces for a, _, _ in f])
+    cx, cz, y0 = (P[:, 0].min() + P[:, 0].max()) / 2, (P[:, 2].min() + P[:, 2].max()) / 2, P[:, 1].min()
+
     def xf(p):  # lies flat, top face up
-        return to_skyrim(((p[0] - cx) * CM_TO_UNITS, (p[1] - y0) * CM_TO_UNITS, (p[2] - cz) * CM_TO_UNITS))
-    s = build_shape("SPPalette", TEX + "palette.dds", V, VT, VN, faces, xf)
-    save_dds_dxt1(bake_ao(base_png, ao_png), os.path.join(ROOT, "Data", "textures", "SkyrimPainter", "palette.dds"), 1024)
-    write_mesh(os.path.join(OUT, "Item_Palette.nif"), "SkyrimPainter_Item_Palette", [s])
-    print(f"palette: {len(faces)} faces")
-    return bounds([s])
+        x, y, z = (p[0] - cx) * CM, (p[1] - y0) * CM, (p[2] - cz) * CM
+        return (-x, z, y)
+
+    rot = lambda d: (-d[0], d[2], d[1])
+    tex = bake_ao(base_png, ao_png)
+    save_dds_dxt1(tex, os.path.join(TEXTURES, "palette.dds"), 1024)
+    m = make_mesh("SPPalette", TEX + "palette.dds", V, VT, VN, faces, xf, rot)
+    write("Item_Palette", [m], collision([m], dynamic=True, mass=0.5))
+    top = nw.Mesh("top", "", "")
+    top.verts, top.tris = m.verts, [t for t in m.tris if np.mean([m.verts[i][2][2] for i in t]) > 0.7]
+    img = ui_picture(top, tex, os.path.join(UI, "palette.png"), 22.0, light=(0.2, 0.3, 0.93))
+    print(f"  UI/palette.png {img.size}")
+    spots(img)
+
+
+def spots(img):
+    """Where the paints sit on the palette picture: evenly round the rim, away from the thumb hole."""
+    import cv2
+    a = (np.asarray(img)[..., 3] > 0).astype(np.uint8)
+    H, W = a.shape
+    dist = cv2.distanceTransform(a, cv2.DIST_L2, 5)
+    inset = 0.09 * min(W, H)
+    ys, xs = np.nonzero(np.abs(dist - inset) < 1.5)
+    cy, cx = H / 2, W / 2
+    ang = np.arctan2(ys - cy, xs - cx)
+    # the thumb hole: the hole contour inside the outline
+    cnts, hier = cv2.findContours(a, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    hole_c = None
+    if hier is not None:
+        holes = [cnts[i] for i in range(len(cnts)) if hier[0][i][3] >= 0]
+        if holes:
+            M = cv2.moments(max(holes, key=cv2.contourArea))
+            if M["m00"]:
+                hole_c = (M["m10"] / M["m00"], M["m01"] / M["m00"])
+    picks = []
+    for target in np.linspace(-math.pi, math.pi, 96, endpoint=False):
+        i = int(np.argmin(np.abs(np.angle(np.exp(1j * (ang - target))))))
+        x, y = int(xs[i]), int(ys[i])
+        if hole_c and math.hypot(x - hole_c[0], y - hole_c[1]) < 0.17 * min(W, H):
+            continue
+        if all(math.hypot(x - px, y - py) > 0.125 * min(W, H) for px, py in picks):
+            picks.append((x, y))
+    picks = picks[:12]
+    print(f"  {len(picks)} paint spots on the palette (thumb hole at {hole_c})")
+    L = ["// Generated by tools/convert_models.py: where the paints sit on UI/palette.png (0..1 of its size).", "#pragma once", "",
+         "namespace PaletteSpots", "{", f"\tinline constexpr int kCount = {len(picks)};", "\tinline constexpr float kSpots[kCount][2] = {"]
+    L += [f"\t\t{{ {x / W:.4f}f, {y / H:.4f}f }}," for x, y in picks]
+    L += ["\t};", f"\tinline constexpr float kAspect = {W / H:.4f}f;  // width / height of the picture",
+          f"\t// UI/brush.png: the bristle tip (0..1 of its size) and width / height",
+          f"\tinline constexpr float kBrushTip[2] = {{ {BRUSH_TIP[0]:.4f}f, {BRUSH_TIP[1]:.4f}f }};",
+          f"\tinline constexpr float kBrushAspect = {BRUSH_TIP[2]:.4f}f;", "}", ""]
+    open(os.path.join(ROOT, "src", "PaletteSpots.h"), "w").write("\n".join(L))
 
 
 def main():
-    path = os.path.join(ROOT, "tools", "bounds.json")
-    b = json.load(open(path)) if os.path.exists(path) else {}
-    what, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 2 else (None, [])
-    if what == "easel" and len(args) == 2:
-        b["Easel"] = b["Item_Easel"] = easel(*args)
-    elif what == "brush" and len(args) == 2:
-        b["Item_Paint"] = brush(*args)
-    elif what == "palette" and len(args) == 3:
-        b["Item_Palette"] = palette(*args)
-    else:
+    if len(sys.argv) != 8:
         raise SystemExit(__doc__)
-    json.dump(b, open(path, "w"), indent=1)
+    info = easel_and_canvas(sys.argv[1], sys.argv[2])
+    brush(sys.argv[3], sys.argv[4])
+    palette(sys.argv[5], sys.argv[6], sys.argv[7])
+    json.dump({"bounds": BOUNDS, "canvas": info}, open(os.path.join(ROOT, "tools", "bounds.json"), "w"), indent=1)
+    print("canvas:", {k: round(v, 1) for k, v in info.items()})
 
 
 if __name__ == "__main__":

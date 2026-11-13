@@ -342,26 +342,33 @@ namespace Art
 		}).detach();
 	}
 
-	void ConvertAndShow(std::vector<std::uint8_t> a_rgba, const std::string& a_dds, int a_w, int a_h, RE::FormID a_ref)
+	bool ConvertNow(const std::uint8_t* a_rgba, int a_srcW, int a_srcH, const std::string& a_dds, int a_w, int a_h)
 	{
 		{
 			std::lock_guard lk(g_mtx);
 			g_conversions[a_dds] = Conv::Running;
 		}
-		std::thread([px = std::move(a_rgba), a_dds, a_w, a_h, a_ref] {
-			std::string err;
-			bool        ok = false;
-			try {
-				ok = Dds::ConvertPixels(px.data(), kPaintingW, kPaintingH, a_w, a_h, DataPath(a_dds), err);
-			} catch (const std::exception& e) {
-				err = e.what();
-			}
-			{
-				std::lock_guard lk(g_mtx);
-				g_conversions[a_dds] = ok ? Conv::Ready : Conv::Failed;
-			}
-			if (!ok) {
-				spdlog::error("Could not write {}: {}", a_dds, err);
+		std::string err;
+		bool        ok = false;
+		try {
+			ok = Dds::ConvertPixels(a_rgba, a_srcW, a_srcH, a_w, a_h, DataPath(a_dds), err);
+		} catch (const std::exception& e) {
+			err = e.what();
+		}
+		{
+			std::lock_guard lk(g_mtx);
+			g_conversions[a_dds] = ok ? Conv::Ready : Conv::Failed;
+		}
+		if (!ok) {
+			spdlog::error("Could not write {}: {}", a_dds, err);
+		}
+		return ok;
+	}
+
+	void ConvertAndShow(std::vector<std::uint8_t> a_rgba, int a_srcW, int a_srcH, const std::string& a_dds, int a_w, int a_h, RE::FormID a_ref)
+	{
+		std::thread([px = std::move(a_rgba), a_srcW, a_srcH, a_dds, a_w, a_h, a_ref] {
+			if (!ConvertNow(px.data(), a_srcW, a_srcH, a_dds, a_w, a_h)) {
 				return;
 			}
 			SKSE::GetTaskInterface()->AddTask([a_dds, a_ref] {

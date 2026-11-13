@@ -19,8 +19,11 @@
 // puts it back whenever the game rebuilds the 3D (cell loads, moves).
 namespace Art
 {
-	inline constexpr int kPaintingW = 1024;  // the painting's pixel size (4:3)
-	inline constexpr int kPaintingH = 768;
+	// the painting's pixel size: 1024 x 768 lying (landscape), 768 x 1024 standing (portrait)
+	inline constexpr int kLong = 1024;
+	inline constexpr int kShort = 768;
+	inline int Width(bool a_portrait) { return a_portrait ? kShort : kLong; }
+	inline int Height(bool a_portrait) { return a_portrait ? kLong : kShort; }
 
 	std::string                ToUtf8(const std::filesystem::path& a_path);
 	std::filesystem::path      FromUtf8(const std::string& a_text);
@@ -39,14 +42,17 @@ namespace Art
 	// Makes sure a_dds exists, converting the PNG a_png at a_w x a_h in the background if it doesn't.
 	// References showing it are updated once it's ready. Any thread.
 	void EnsureFromPng(const std::string& a_dds, const std::filesystem::path& a_png, int a_w, int a_h);
-	// Converts pixels (RGBA8, kPaintingW x kPaintingH) to a_dds in the background, then shows it on a_ref. Any thread.
-	void ConvertAndShow(std::vector<std::uint8_t> a_rgba, const std::string& a_dds, int a_w, int a_h, RE::FormID a_ref);
+	// Converts pixels (RGBA8, a_srcW x a_srcH) to a_dds (a_w x a_h) in the background, then shows it on a_ref
+	// (0 = none) and on every reference already showing a_dds. Any thread.
+	void ConvertAndShow(std::vector<std::uint8_t> a_rgba, int a_srcW, int a_srcH, const std::string& a_dds, int a_w, int a_h, RE::FormID a_ref);
+	// Same, but blocking (call from a worker thread). True when the texture was written.
+	bool ConvertNow(const std::uint8_t* a_rgba, int a_srcW, int a_srcH, const std::string& a_dds, int a_w, int a_h);
 	bool IsReady(const std::string& a_dds);
 
 	// Main thread: applies textures to references whose 3D appeared, checks a few for lost textures.
 	void Tick();
 	void RegisterEvents();
-	// The game's bitmap on a reference's canvas right now (main thread). Used by the hanging preview.
+	// Puts a texture on a reference's canvas right now (main thread). Used by the placement preview.
 	bool ApplyNow(RE::TESObjectREFR* a_ref, const std::string& a_dds);
 
 	// Deletes a texture file (when nothing uses it any more). Any thread.

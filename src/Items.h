@@ -14,48 +14,71 @@
 
 #pragma once
 
-#include "Wall.h"
-
-// The painter's things: crafted items, easels set up in the world, finished paintings in the pack.
-//   Drop a Blank Canvas (with an Easel in your pack)  -> the easel stands where you are, canvas on it
-//   Activate the easel (with Palette and Paints)       -> the studio opens
-//   Drop a Painting                                    -> hang it on a wall
+// The painter's things and the game side of painting:
+//   Easel (book): use it in the inventory -> place it with a preview
+//   Activate the easel -> menu: put a Blank Canvas on (landscape / portrait), put a painting back on to
+//     edit it, turn the canvas, paint, take the canvas off, pick the easel up
+//   Finish a painting -> it becomes one of 50 Painting items (each its own DDS)
+//   Use a Painting in the inventory -> hang it on a wall
 namespace Items
 {
 	bool Init();          // kDataLoaded: forms, recipe station, events
-	void OnGameLoaded();  // re-applies easel canvases
-
-	// What the studio works on.
-	struct Easel
-	{
-		RE::ObjectRefHandle ref;
-		std::string         wipPng;  // UTF-8 path of the painting in progress ("" = blank canvas)
-	};
-	std::optional<Easel> TakeStudioRequest();  // any thread: set when the player activated an easel
-
-	// Paintings waiting in the pack, for the picker (any thread).
-	std::vector<Wall::Painting> Unhung();
-	bool                        TakePickerRequest();  // a Painting was dropped and there's more than one to choose from
-
-	// ---- studio results (any thread; the game work is queued for the main thread)
-	// Steps away: the painting in progress is kept on the easel (shown on its canvas).
-	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_rgba);
-	// Finished: the painting goes into the pack, the easel folds up into the pack too.
-	void Finish(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_rgba, std::string a_name);
-	// Packs the easel and the canvas back up (the painting in progress is thrown away).
-	void PackUp(RE::ObjectRefHandle a_easel);
-	// Picker: hang this painting / put it back.
-	void Hang(const std::string& a_id);
-	void CancelPick();
-
-	// A painting goes back into the pack (taken down, hanging cancelled). Main thread.
-	void ReturnPainting(const Wall::Painting& a_painting);
-
-	// Activate pressed with nothing else to do: an easel or a hung painting in the line of sight? (any thread)
-	void RequestActivate();
-
-	// co-save
+	void OnGameLoaded();  // puts the textures back on easels, renames the painting items
 	void InstallSerialization();
+
+	// ---- painting slots (50)
+	struct SlotView
+	{
+		std::string name;
+		std::string dds;  // game path of its texture
+		bool        portrait = false;
+	};
+	bool GetSlot(int a_slot, SlotView& a_out);  // false if the slot is unused. Any thread.
+	void EnsureSlotTexture(int a_slot);          // re-makes the DDS from the saved picture if it's missing
+	void TakePaintingItem(int a_slot);           // main thread
+	void GivePaintingItem(int a_slot);           // main thread
+
+	// ---- the easel
+	RE::TESObjectACTI* EaselStandForm();
+	void               EaselPlaced(RE::TESObjectREFR* a_stand);  // main thread (Place)
+
+	struct EaselMenuInfo
+	{
+		RE::ObjectRefHandle easel;
+		bool                hasCanvas = false;
+		bool                portrait = false;
+		int                 slot = -1;     // editing a finished painting
+		std::string         name;
+		bool                painted = false;
+		bool                haveCanvasItem = false, havePalette = false, havePaints = false;
+		int                 freeSlots = 0;
+		std::vector<std::pair<int, std::string>> paintingsInPack;  // slot, name
+	};
+	std::optional<EaselMenuInfo> TakeEaselMenuRequest();  // any thread
+
+	// Easel menu actions (any thread; the game work runs on the main thread)
+	void SetCanvas(RE::ObjectRefHandle a_easel, bool a_portrait);
+	void EditPainting(RE::ObjectRefHandle a_easel, int a_slot);
+	void TurnCanvas(RE::ObjectRefHandle a_easel);
+	void TakeCanvasOff(RE::ObjectRefHandle a_easel);
+	void ScrapePainting(RE::ObjectRefHandle a_easel);  // editing a painting: it is scraped off, its slot freed
+	void PickUpEasel(RE::ObjectRefHandle a_easel);
+	void Paint(RE::ObjectRefHandle a_easel);
+
+	// ---- the studio
+	struct Work
+	{
+		RE::ObjectRefHandle   easel;
+		std::filesystem::path dir;  // where the layers are kept while on the easel
+		bool                  portrait = false;
+		int                   slot = -1;
+		std::string           name;
+	};
+	std::optional<Work> TakeStudioRequest();  // any thread
+	// After the studio saved the layers to Work::dir (worker thread):
+	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
+	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
+
 	void WriteString(SKSE::SerializationInterface* a_intfc, const std::string& a_s);
 	bool ReadString(SKSE::SerializationInterface* a_intfc, std::string& a_s);
 }

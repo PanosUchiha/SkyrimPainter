@@ -16,13 +16,13 @@
 
 #include "Items.h"
 
-// The painting screen: the canvas, brushes, the palette and colour mixing. Render thread only.
+// The painting screen: the canvas with its layers on the left, the palette (paint already on it) and
+// the brushes on the right. Right-click a brush to pick it up, right-click a paint to load the brush
+// (a second paint mixes in), right-click the bare palette to put the mix down, hold right-click on the
+// canvas to paint. Render thread only.
 namespace Studio
 {
-	bool Open(const Items::Easel& a_easel);  // false if the canvas couldn't be set up
-	bool Draw();                             // false once the studio has closed
-	void Flush();                            // start of each frame: frees textures the last frame used
-
-	// Colour mixing (exposed for testing): paint-like (subtractive) mix of two sRGB colours, a_t = share of b.
-	void Mix(const float a_a[3], const float a_b[3], float a_t, float a_out[3]);
+	bool Open(const Items::Work& a_work);  // false if the canvas couldn't be set up
+	bool Draw();                           // false once the studio has closed
+	void Flush();                          // start of each frame: frees textures the last frame used
 }

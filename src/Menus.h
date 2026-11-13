@@ -14,19 +14,19 @@
 
 #pragma once
 
-#include "Wall.h"
+#include "Items.h"
+#include "Place.h"
 
-// Smaller screens: a hung painting's menu, the "which painting?" picker and the hanging HUD. Render thread.
+// The small screens: the easel's menu, a hung painting's menu and the placing HUD. Render thread.
 namespace Menus
 {
-	void OpenPainting(const Wall::MenuInfo& a_info);
-	bool DrawPainting();  // false once closed
+	void OpenEasel(const Items::EaselMenuInfo& a_info);
+	bool DrawEasel();  // false once closed
 
-	void OpenPicker();
-	bool DrawPicker();  // false once closed
+	void OpenPainting(const Place::MenuInfo& a_info);
+	bool DrawPainting();
 
-	void DrawHangHud(const Wall::Status& a_status);
-
-	void Release();  // frees thumbnails (window closed)
-	void Flush();    // start of each frame
+	void DrawPlaceHud(const Place::Status& a_status);
+	void Release();
+	void Flush();
 }

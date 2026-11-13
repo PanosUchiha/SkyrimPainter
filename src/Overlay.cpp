@@ -19,7 +19,7 @@
 #include "Menus.h"
 #include "Studio.h"
 #include "Theme.h"
-#include "Wall.h"
+#include "Place.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
@@ -53,7 +53,7 @@ namespace Overlay
 			None,
 			Studio,
 			PaintingMenu,
-			Picker
+			EaselMenu
 		};
 		Screen g_screen = Screen::None;  // render thread
 
@@ -252,7 +252,7 @@ namespace Overlay
 			if (!a_event) {
 				return;
 			}
-			const bool placing = Wall::IsPlacing() && !g_open;
+			const bool placing = Place::IsPlacing() && !g_open;
 			bool       menuBusy = false;
 			bool       menuChecked = false;
 			auto       busy = [&] {
@@ -283,18 +283,12 @@ namespace Overlay
 					if (keyboard && placing && !busy()) {
 						const float held = btn->HeldDuration();
 						if ((code == kDIK_Up || code == kDIK_Down) && held >= g_offsetRepeatAt) {
-							Wall::AdjustOffset((code == kDIK_Up ? -1 : 1) * (g_shiftDown ? 8 : 1));
+							Place::Nudge((code == kDIK_Up ? -1 : 1) * (g_shiftDown ? 8 : 1));
 							g_offsetRepeatAt = held + (g_shiftDown ? 0.10f : 0.05f);
 						}
 						if ((code == kDIK_Left || code == kDIK_Right) && held >= g_sizeRepeatAt) {
-							const int dir = code == kDIK_Right ? 1 : -1;
-							if (g_shiftDown) {
-								Wall::CycleStyle(dir);
-								g_sizeRepeatAt = held + 0.30f;
-							} else {
-								Wall::AdjustScale(dir);
-								g_sizeRepeatAt = held + 0.08f;
-							}
+							Place::Wheel(code == kDIK_Right ? 1 : -1, g_shiftDown);
+							g_sizeRepeatAt = held + 0.10f;
 						}
 					}
 					continue;
@@ -320,14 +314,6 @@ namespace Overlay
 				if (keyboard && (code == 0x38 || code == 0xB8)) {
 					g_altDown = down;
 				}
-				// Activate: an easel or a hung painting in the line of sight (they have no collision, so we look ourselves)
-				if (down && !g_open && !Wall::IsPlacing()) {
-					auto* ue = RE::UserEvents::GetSingleton();
-					auto* ui = RE::UI::GetSingleton();
-					if (ue && btn->QUserEvent() == ue->activate && ui && !ui->GameIsPaused() && !ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) && !busy()) {
-						Items::RequestActivate();
-					}
-				}
 				if (placing) {
 					if (!down || busy()) {
 						continue;
@@ -335,30 +321,20 @@ namespace Overlay
 					if (e->GetDevice() == RE::INPUT_DEVICE::kMouse) {
 						using MouseKey = RE::BSWin32MouseDevice::Key;
 						if (code == 0) {
-							Wall::RequestPlace();
+							Place::RequestPlace();
 						} else if (code == 1) {
-							Wall::CancelPlacement();
+							Place::Cancel();
 						} else if (code == MouseKey::kWheelUp || code == MouseKey::kWheelDown) {
-							const int dir = code == MouseKey::kWheelUp ? 1 : -1;
-							if (g_shiftDown) {
-								Wall::CycleStyle(dir);
-							} else {
-								Wall::AdjustScale(dir);
-							}
+							Place::Wheel(code == MouseKey::kWheelUp ? 1 : -1, g_shiftDown);
 						}
 					} else if (keyboard) {
 						if (code == kDIK_Escape) {
-							Wall::CancelPlacement();
+							Place::Cancel();
 						} else if (code == kDIK_Up || code == kDIK_Down) {
-							Wall::AdjustOffset((code == kDIK_Up ? -1 : 1) * (g_shiftDown ? 8 : 1));
+							Place::Nudge((code == kDIK_Up ? -1 : 1) * (g_shiftDown ? 8 : 1));
 							g_offsetRepeatAt = 0.35f;
 						} else if (code == kDIK_Left || code == kDIK_Right) {
-							const int dir = code == kDIK_Right ? 1 : -1;
-							if (g_shiftDown) {
-								Wall::CycleStyle(dir);
-							} else {
-								Wall::AdjustScale(dir);
-							}
+							Place::Wheel(code == kDIK_Right ? 1 : -1, g_shiftDown);
 							g_sizeRepeatAt = 0.35f;
 						}
 					}
@@ -460,7 +436,7 @@ namespace Overlay
 		void DispatchInputHook(RE::BSTEventSource<RE::InputEvent*>* a_source, RE::InputEvent* const* a_events)
 		{
 			const auto original = reinterpret_cast<DispatchInput*>(g_dispatchInput);
-			if (!g_open && Wall::IsPlacing() && a_events && *a_events && !g_inputDisabled && !OtherMenuOpen()) {
+			if (!g_open && Place::IsPlacing() && a_events && *a_events && !g_inputDisabled && !OtherMenuOpen()) {
 				SafeHandleInput(a_events);
 				static RE::InputEvent*       placing[1];
 				std::vector<RE::InputEvent*> pass;
@@ -592,7 +568,7 @@ namespace Overlay
 		// Which screen to open, if any (render thread, nothing open).
 		void PollRequests()
 		{
-			if (g_open || g_wantOpen || Wall::IsPlacing()) {
+			if (g_open || g_wantOpen || Place::IsPlacing()) {
 				return;
 			}
 			if (auto easel = Items::TakeStudioRequest()) {
@@ -602,15 +578,15 @@ namespace Overlay
 				}
 				return;
 			}
-			if (auto menu = Wall::TakeActivated()) {
+			if (auto menu = Place::TakeActivated()) {
 				Menus::OpenPainting(*menu);
 				g_screen = Screen::PaintingMenu;
 				g_wantOpen = true;
 				return;
 			}
-			if (!OtherMenuOpen() && Items::TakePickerRequest()) {
-				Menus::OpenPicker();
-				g_screen = Screen::Picker;
+			if (auto easel = Items::TakeEaselMenuRequest()) {
+				Menus::OpenEasel(*easel);
+				g_screen = Screen::EaselMenu;
 				g_wantOpen = true;
 			}
 		}
@@ -738,19 +714,14 @@ namespace Overlay
 
 		Studio::Flush();
 		Menus::Flush();
-		ApplyPlacementControls(Wall::IsPlacing());
-		Wall::Tick();
+		ApplyPlacementControls(Place::IsPlacing());
+		Place::Tick();
 		PollRequests();
-		if (g_open && g_screen == Screen::PaintingMenu) {
-			if (auto menu = Wall::TakeActivated()) {
-				Menus::OpenPainting(*menu);  // after Change frame: the menu follows the new frame
-			}
-		}
 		if (g_wantOpen != g_open) {
 			ApplyOpen(g_wantOpen);
 		}
-		Wall::Status placing;
-		const bool   hud = !g_open && Wall::GetStatus(placing);
+		Place::Status placing;
+		const bool    hud = !g_open && Place::GetStatus(placing);
 		if ((!g_open && !hud) || g_imguiFailed) {
 			if (!g_open) {
 				std::lock_guard lk(g_inputMtx);
@@ -797,7 +768,7 @@ namespace Overlay
 		ImGui::NewFrame();
 		if (hud) {
 			io.MouseDrawCursor = false;
-			Menus::DrawHangHud(placing);
+			Menus::DrawPlaceHud(placing);
 		} else {
 			bool keep = true;
 			switch (g_screen) {
@@ -807,8 +778,8 @@ namespace Overlay
 			case Screen::PaintingMenu:
 				keep = Menus::DrawPainting();
 				break;
-			case Screen::Picker:
-				keep = Menus::DrawPicker();
+			case Screen::EaselMenu:
+				keep = Menus::DrawEasel();
 				break;
 			default:
 				keep = false;

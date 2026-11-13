@@ -15,12 +15,9 @@
 #include "Items.h"
 
 #include "Art.h"
-#include "Dds.h"
 #include "Forms.h"
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#define STBIW_WINDOWS_UTF8
-#include <stb_image_write.h>
+#include "Place.h"
+#include "Store.h"
 
 namespace fs = std::filesystem;
 
@@ -29,40 +26,48 @@ namespace Items
 	namespace
 	{
 		constexpr std::uint32_t kSerializationID = 'SKPT';
+		constexpr std::uint32_t kRecordSlots = 'SLOT';
 		constexpr std::uint32_t kRecordEasels = 'EASL';
-		constexpr std::uint32_t kRecordUnhung = 'UNHG';
-		constexpr int           kWipW = 512;  // the painting in progress on the easel's canvas
-		constexpr int           kWipH = 384;
+		constexpr int           kWipLong = 512;  // the painting in progress on the easel's canvas
+		constexpr int           kWipShort = 384;
 
 		RE::TESObjectMISC* g_canvas = nullptr;
-		RE::TESObjectMISC* g_easelItem = nullptr;
 		RE::TESObjectMISC* g_palette = nullptr;
 		RE::TESObjectMISC* g_paints = nullptr;
-		RE::TESObjectMISC* g_painting = nullptr;
-		RE::TESObjectACTI* g_easelStand = nullptr;
+		RE::TESObjectBOOK* g_easelBook = nullptr;
+		RE::TESObjectACTI* g_stand = nullptr;
+		RE::TESObjectACTI* g_easelCanvas[2]{};
+		std::array<RE::TESObjectBOOK*, Forms::kPaintingSlots> g_books{};
 
-		struct EaselState
+		struct Slot
 		{
-			std::string wipId;   // name of its files
-			std::string wipPng;  // UTF-8 path, "" = blank canvas
-			std::string wipDds;  // game path of the texture on its canvas, "" = blank
+			bool          used = false;
+			std::string   id;  // folder under Paintings (unique, so saves never share files)
+			std::string   name;
+			bool          portrait = false;
+			std::uint32_t version = 0;
 		};
 
-		std::mutex                                   g_mtx;  // guards the state below
-		std::unordered_map<RE::FormID, EaselState>   g_easels;
-		std::vector<Wall::Painting>                  g_unhung;
-		std::optional<Easel>                         g_studioRequest;
-		std::atomic<bool>                            g_pickerRequest{ false };
-		std::unordered_map<RE::FormID, int>          g_ignoreRemovals;  // our own RemoveItem calls (main thread)
-
-		bool IsOurs(RE::FormID a_base)
+		struct Easel
 		{
-			for (auto* f : { g_canvas, g_easelItem, g_palette, g_paints, g_painting }) {
-				if (f && f->GetFormID() == a_base) {
-					return true;
-				}
-			}
-			return false;
+			RE::FormID  canvas = 0;  // canvas reference on it (0 = none)
+			bool        portrait = false;
+			int         slot = -1;   // editing this finished painting
+			std::string workId;      // folder under InProgress
+			std::string wipDds;      // texture on the canvas while it is being painted
+			std::string name;
+			bool        painted = false;
+		};
+
+		std::mutex                              g_mtx;  // guards the state below
+		std::array<Slot, Forms::kPaintingSlots> g_slots;
+		std::unordered_map<RE::FormID, Easel>   g_easels;  // stand -> state
+		std::optional<EaselMenuInfo>            g_menuRequest;
+		std::optional<Work>                     g_studioRequest;
+
+		std::string SlotDds(const Slot& a_s)
+		{
+			return fmt::format("textures\\SkyrimPainter\\Paintings\\{}_{}.dds", a_s.id, a_s.version);
 		}
 
 		int CountOf(RE::TESBoundObject* a_form)
@@ -76,7 +81,7 @@ namespace Items
 			return it == counts.end() ? 0 : it->second;
 		}
 
-		void Give(RE::TESBoundObject* a_form, int a_count)
+		void Give(RE::TESBoundObject* a_form, int a_count = 1)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (player && a_form && a_count > 0) {
@@ -84,268 +89,252 @@ namespace Items
 			}
 		}
 
-		void Take(RE::TESBoundObject* a_form, int a_count)
+		void Take(RE::TESBoundObject* a_form, int a_count = 1)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (player && a_form && a_count > 0) {
-				g_ignoreRemovals[a_form->GetFormID()] += a_count;
 				player->RemoveItem(a_form, a_count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
 			}
 		}
 
-		fs::path PaintingsFolder() { return Art::UserFolder() / L"Paintings"; }
-		fs::path WipFolder() { return Art::UserFolder() / L"InProgress"; }
-
-		bool WritePng(const fs::path& a_path, const std::vector<std::uint8_t>& a_rgba, std::string& a_error)
+		int SlotOfBook(const RE::TESForm* a_form)
 		{
-			std::error_code ec;
-			fs::create_directories(a_path.parent_path(), ec);
-			auto tmp = a_path;
-			tmp += L".tmp";
-			const auto utf8 = Art::ToUtf8(tmp);
-			if (!stbi_write_png(utf8.c_str(), Art::kPaintingW, Art::kPaintingH, 4, a_rgba.data(), Art::kPaintingW * 4)) {
-				a_error = "could not write " + utf8;
-				return false;
+			for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+				if (a_form && g_books[i] == a_form) {
+					return i;
+				}
 			}
-			if (!::MoveFileExW(tmp.c_str(), a_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-				a_error = fmt::format("rename failed ({})", ::GetLastError());
-				return false;
-			}
-			return true;
+			return -1;
 		}
 
-		// Ground height under (x, y), looking down from a bit above a_z. a_z itself if nothing is hit.
-		float GroundZ(float a_x, float a_y, float a_z)
+		// The painting items carry the painting's name. Main thread.
+		void NameBook(int a_slot)
 		{
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			auto* cell = player ? player->GetParentCell() : nullptr;
-			auto* world = cell ? cell->GetbhkWorld() : nullptr;
-			if (!world) {
-				return a_z;
+			if (a_slot < 0 || a_slot >= Forms::kPaintingSlots || !g_books[a_slot]) {
+				return;
 			}
-			const float     s = RE::bhkWorld::GetWorldScale();
-			const float     top = a_z + 90.0f, bottom = a_z - 300.0f;
-			RE::bhkPickData pick{};
-			pick.rayInput.from = RE::hkVector4(a_x * s, a_y * s, top * s, 0.0f);
-			pick.rayInput.to = RE::hkVector4(a_x * s, a_y * s, bottom * s, 0.0f);
-			RE::CFilter filter{};
-			player->GetCollisionFilterInfo(filter);
-			pick.rayInput.filterInfo.filter = (filter.filter & 0xFFFF0000) | static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
-			world->PickObject(pick);
-			if (!pick.rayOutput.HasHit()) {
-				return a_z;
+			std::string name;
+			{
+				std::lock_guard lk(g_mtx);
+				name = g_slots[a_slot].used ? g_slots[a_slot].name : std::string("Painting");
 			}
-			return top + (bottom - top) * pick.rayOutput.hitFraction;
+			g_books[a_slot]->fullName = name.c_str();
 		}
 
-		void RemoveEaselRef(RE::TESObjectREFR* a_ref)
+		fs::path WorkDir(const std::string& a_id) { return Store::WorkFolder() / Art::FromUtf8(a_id); }
+		fs::path SlotDir(const std::string& a_id) { return Store::PaintingsFolder() / Art::FromUtf8(a_id); }
+
+		void DeleteRef(RE::FormID a_id)
+		{
+			if (auto* ref = a_id ? RE::TESForm::LookupByID<RE::TESObjectREFR>(a_id) : nullptr) {
+				Art::Forget(a_id);
+				ref->Disable();
+				ref->SetDelete(true);
+			}
+		}
+
+		// The canvas reference sits exactly where the stand is, turned the same way. Main thread.
+		RE::FormID SpawnCanvas(RE::TESObjectREFR* a_stand, bool a_portrait)
+		{
+			auto* base = g_easelCanvas[a_portrait ? 1 : 0];
+			if (!a_stand || !base) {
+				return 0;
+			}
+			auto handle = RE::TESDataHandler::GetSingleton()->CreateReferenceAtLocation(
+				base, a_stand->GetPosition(), a_stand->GetAngle(), a_stand->GetParentCell(), a_stand->GetWorldspace(), nullptr, nullptr, RE::ObjectRefHandle(), true, true);
+			auto ref = handle.get();
+			return ref ? ref->GetFormID() : 0;
+		}
+
+		RE::TESObjectREFR* StandOf(RE::TESObjectREFR* a_ref)  // the stand, for a stand or a canvas on an easel
 		{
 			if (!a_ref) {
-				return;
-			}
-			EaselState st;
-			{
-				std::lock_guard lk(g_mtx);
-				if (const auto it = g_easels.find(a_ref->GetFormID()); it != g_easels.end()) {
-					st = it->second;
-					g_easels.erase(it);
-				}
-			}
-			Art::Forget(a_ref->GetFormID());
-			a_ref->Disable();
-			a_ref->SetDelete(true);
-			std::error_code ec;
-			if (!st.wipPng.empty()) {
-				fs::remove(Art::FromUtf8(st.wipPng), ec);
-			}
-			Art::DeleteTexture(st.wipDds);
-			spdlog::info("Easel {:08X} removed", a_ref->GetFormID());
-		}
-
-		// ---- dropping our items (main thread)
-		void SetUpEasel()
-		{
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (!player || !g_easelStand) {
-				return;
-			}
-			const float        h = player->GetAngleZ();
-			const RE::NiPoint3 p = player->GetPosition();
-			RE::NiPoint3       at{ p.x + std::sin(h) * 85.0f, p.y + std::cos(h) * 85.0f, p.z };
-			at.z = GroundZ(at.x, at.y, p.z);
-			const RE::NiPoint3 angle{ 0.0f, 0.0f, h + 3.14159265f };  // the canvas faces the player
-			auto handle = RE::TESDataHandler::GetSingleton()->CreateReferenceAtLocation(
-				g_easelStand, at, angle, player->GetParentCell(), player->GetWorldspace(), nullptr, nullptr, RE::ObjectRefHandle(), true, true);
-			auto ref = handle.get();
-			if (!ref) {
-				Art::Notify("SkyrimPainter: could not set up the easel here");
-				Give(g_canvas, 1);
-				Give(g_easelItem, 1);
-				return;
-			}
-			{
-				std::lock_guard lk(g_mtx);
-				g_easels[ref->GetFormID()] = EaselState{ Art::NewId(), {}, {} };
-			}
-			spdlog::info("Easel {:08X} set up at ({:.0f}, {:.0f}, {:.0f})", ref->GetFormID(), at.x, at.y, at.z);
-			Art::Notify("Easel set up. Activate it to paint (you need a Palette and Paints)");
-		}
-
-		void HandleDrop(RE::FormID a_base, int a_count, RE::ObjectRefHandle a_dropped)
-		{
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			auto* form = RE::TESForm::LookupByID<RE::TESBoundObject>(a_base);
-			if (!player || !form) {
-				return;
-			}
-			// the dropped item in the world (the event usually names it; otherwise the nearest one)
-			RE::NiPointer<RE::TESObjectREFR> dropped = a_dropped.get();
-			if (!dropped) {
-				if (auto* tes = RE::TES::GetSingleton()) {
-					float best = 1e30f;
-					tes->ForEachReferenceInRange(player, 500.0f, [&](RE::TESObjectREFR* a_ref) {
-						if (a_ref && a_ref->GetBaseObject() == form && !a_ref->IsDisabled()) {
-							const float d = a_ref->GetPosition().GetDistance(player->GetPosition());
-							if (d < best) {
-								best = d;
-								dropped = RE::NiPointer<RE::TESObjectREFR>(a_ref);
-							}
-						}
-						return RE::BSContainer::ForEachResult::kContinue;
-					});
-				}
-			}
-			if (!dropped) {
-				return;  // not a drop (sold, stolen, removed by a script...)
-			}
-			dropped->Disable();
-			dropped->SetDelete(true);
-			spdlog::info("Dropped {} x{}", form->GetName(), a_count);
-
-			if (form == g_canvas) {
-				Give(g_canvas, a_count - 1);
-				if (CountOf(g_easelItem) <= 0) {
-					Give(g_canvas, 1);
-					Art::Notify("You need an Easel to set up a canvas");
-					return;
-				}
-				Take(g_easelItem, 1);
-				SetUpEasel();
-			} else if (form == g_painting) {
-				std::vector<Wall::Painting> list;
-				{
-					std::lock_guard lk(g_mtx);
-					list = g_unhung;
-				}
-				if (list.empty()) {
-					Give(g_painting, a_count);
-					Art::Notify("That painting is blank - paint one at your easel first");
-					return;
-				}
-				Give(g_painting, a_count - 1);
-				if (list.size() == 1 || Wall::IsPlacing()) {
-					if (Wall::IsPlacing()) {
-						Give(g_painting, 1);
-						return;
-					}
-					{
-						std::lock_guard lk(g_mtx);
-						g_unhung.erase(g_unhung.begin());
-					}
-					Wall::BeginPlacement(list.front());
-				} else {
-					g_pickerRequest = true;  // the picker opens once the inventory is closed
-				}
-			} else {
-				Give(form, a_count);
-				Art::Notify(form == g_easelItem ? "Drop a Blank Canvas to set up your easel" : "Keep it in your pack - you'll need it at the easel");
-			}
-		}
-
-		// ---- activation (main thread)
-		bool TryEasel()
-		{
-			if (auto* pick = RE::CrosshairPickData::GetSingleton()) {
-				if (auto target = pick->target.get(); target && target->GetBaseObject() != g_easelStand) {
-					return false;
-				}
-			}
-			auto* camera = RE::PlayerCamera::GetSingleton();
-			if (!camera || !camera->cameraRoot) {
-				return false;
-			}
-			const auto&  xf = camera->cameraRoot->world;
-			const auto   from = xf.translate;
-			RE::NiPoint3 dir{ xf.rotate.entry[0][1], xf.rotate.entry[1][1], xf.rotate.entry[2][1] };
-			const float  len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-			if (len < 1e-4f) {
-				return false;
-			}
-			dir = { dir.x / len, dir.y / len, dir.z / len };
-			std::vector<std::pair<RE::FormID, std::string>> easels;
-			{
-				std::lock_guard lk(g_mtx);
-				for (const auto& [id, st] : g_easels) {
-					easels.emplace_back(id, st.wipPng);
-				}
-			}
-			RE::TESObjectREFR* best = nullptr;
-			std::string        bestWip;
-			float              bestT = 1e30f;
-			for (const auto& [id, wip] : easels) {
-				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
-				if (!ref || ref->IsDisabled() || !ref->Get3D()) {
-					continue;
-				}
-				auto c = ref->GetPosition();
-				c.z += 78.0f;  // middle of the canvas
-				const RE::NiPoint3 v{ c.x - from.x, c.y - from.y, c.z - from.z };
-				const float        t = v.x * dir.x + v.y * dir.y + v.z * dir.z;
-				if (t < 0.0f || t > 400.0f) {
-					continue;
-				}
-				const RE::NiPoint3 off{ v.x - dir.x * t, v.y - dir.y * t, v.z - dir.z * t };
-				const float        miss = std::sqrt(off.x * off.x + off.y * off.y + off.z * off.z);
-				if (miss <= 45.0f && t < bestT) {
-					best = ref;
-					bestT = t;
-					bestWip = wip;
-				}
-			}
-			if (!best) {
-				return false;
-			}
-			if (CountOf(g_palette) <= 0 || CountOf(g_paints) <= 0) {
-				Art::Notify("You need a Painter's Palette and Paints to paint");
-				return true;
+				return nullptr;
 			}
 			std::lock_guard lk(g_mtx);
-			g_studioRequest = Easel{ best->GetHandle(), bestWip };
-			spdlog::info("Studio: easel {:08X}", best->GetFormID());
-			return true;
+			if (g_easels.contains(a_ref->GetFormID())) {
+				return a_ref;
+			}
+			for (const auto& [id, e] : g_easels) {
+				if (e.canvas == a_ref->GetFormID()) {
+					return RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
+				}
+			}
+			return nullptr;
 		}
 
-		class EventSink final : public RE::BSTEventSink<RE::TESContainerChangedEvent>
+		void RequestEaselMenu(RE::TESObjectREFR* a_stand)  // main thread
 		{
-		public:
-			RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event, RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
+			EaselMenuInfo info;
+			info.easel = a_stand->GetHandle();
 			{
-				if (!a_event || a_event->oldContainer != 0x14 || a_event->newContainer != 0 || !IsOurs(a_event->baseObj)) {
-					return RE::BSEventNotifyControl::kContinue;
+				std::lock_guard lk(g_mtx);
+				const auto      it = g_easels.find(a_stand->GetFormID());
+				if (it == g_easels.end()) {
+					return;
 				}
-				const auto base = a_event->baseObj;
-				const int  count = (std::max)(1, a_event->itemCount);
-				const auto dropped = a_event->reference;
-				SKSE::GetTaskInterface()->AddTask([base, count, dropped] {
-					if (auto it = g_ignoreRemovals.find(base); it != g_ignoreRemovals.end() && it->second > 0) {
-						it->second -= count;  // our own RemoveItem
-						if (it->second <= 0) {
-							g_ignoreRemovals.erase(it);
-						}
+				const auto& e = it->second;
+				info.hasCanvas = e.canvas != 0;
+				info.portrait = e.portrait;
+				info.slot = e.slot;
+				info.name = e.name;
+				info.painted = e.painted;
+				for (const auto& s : g_slots) {
+					info.freeSlots += s.used ? 0 : 1;
+				}
+			}
+			info.haveCanvasItem = CountOf(g_canvas) > 0;
+			info.havePalette = CountOf(g_palette) > 0;
+			info.havePaints = CountOf(g_paints) > 0;
+			for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+				SlotView v;
+				if (GetSlot(i, v) && CountOf(g_books[i]) > 0) {
+					info.paintingsInPack.emplace_back(i, v.name);
+				}
+			}
+			std::lock_guard lk(g_mtx);
+			g_menuRequest = std::move(info);
+		}
+
+		void ShowOnCanvas(const Easel& a_e)  // main thread
+		{
+			if (!a_e.canvas) {
+				return;
+			}
+			if (!a_e.wipDds.empty()) {
+				Art::EnsureFromPng(a_e.wipDds, WorkDir(a_e.workId) / L"flat.png", a_e.portrait ? kWipShort : kWipLong, a_e.portrait ? kWipLong : kWipShort);
+				Art::Show(a_e.canvas, a_e.wipDds);
+			} else if (a_e.slot >= 0) {
+				SlotView v;
+				if (GetSlot(a_e.slot, v)) {
+					EnsureSlotTexture(a_e.slot);
+					Art::Show(a_e.canvas, v.dds);
+				}
+			}
+		}
+
+		// Runs a_fn(stand, state) on the main thread and stores the state it leaves.
+		template <class F>
+		void WithEasel(RE::ObjectRefHandle a_easel, F a_fn)
+		{
+			SKSE::GetTaskInterface()->AddTask([a_easel, fn = std::move(a_fn)]() mutable {
+				auto stand = a_easel.get();
+				if (!stand) {
+					return;
+				}
+				Easel e;
+				{
+					std::lock_guard lk(g_mtx);
+					const auto      it = g_easels.find(stand->GetFormID());
+					if (it == g_easels.end()) {
 						return;
 					}
-					HandleDrop(base, count, dropped);
+					e = it->second;
+				}
+				fn(stand.get(), e);
+				std::lock_guard lk(g_mtx);
+				if (auto it = g_easels.find(stand->GetFormID()); it != g_easels.end()) {
+					it->second = e;
+				}
+			});
+		}
+
+		void ClearCanvas(Easel& a_e)  // main thread
+		{
+			DeleteRef(a_e.canvas);
+			Art::DeleteTexture(a_e.wipDds);
+			if (!a_e.workId.empty()) {
+				const auto dir = WorkDir(a_e.workId);
+				std::thread([dir] { Store::RemoveDoc(dir); }).detach();
+			}
+			a_e = Easel{};
+		}
+
+		void DeleteTextureLater(std::string a_dds)
+		{
+			if (a_dds.empty()) {
+				return;
+			}
+			std::thread([a_dds] {
+				std::this_thread::sleep_for(std::chrono::seconds(3));
+				Art::DeleteTexture(a_dds);
+			}).detach();
+		}
+
+		// ---- events
+		class EventSink final :
+			public RE::BSTEventSink<RE::MenuOpenCloseEvent>,
+			public RE::BSTEventSink<RE::TESActivateEvent>
+		{
+		public:
+			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+			{
+				if (!a_event || !a_event->opening) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
+					Place::Cancel(false);
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				if (a_event->menuName != RE::BookMenu::MENU_NAME) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				auto*     book = RE::BookMenu::GetTargetForm();
+				const int slot = SlotOfBook(book);
+				if (!book || (book != g_easelBook && slot < 0)) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				// "Reading" our item: close the book (and the inventory behind it) and start placing.
+				const bool inWorld = RE::BookMenu::GetTargetReference() != nullptr;
+				if (auto* q = RE::UIMessageQueue::GetSingleton()) {
+					q->AddMessage(RE::BookMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+					if (!inWorld) {
+						q->AddMessage(RE::InventoryMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+						q->AddMessage(RE::FavoritesMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+						q->AddMessage(RE::TweenMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+					}
+				}
+				if (inWorld) {
+					Art::Notify("Pick it up first, then use it from your inventory");
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				SKSE::GetTaskInterface()->AddTask([slot] {
+					if (Place::IsPlacing()) {
+						Place::Cancel(false);
+					}
+					if (slot < 0) {
+						Place::BeginEasel();
+						return;
+					}
+					SlotView v;
+					if (!GetSlot(slot, v)) {
+						Art::Notify("This canvas has nothing on it");
+						return;
+					}
+					Place::BeginPainting(slot);
 				});
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* a_event, RE::BSTEventSource<RE::TESActivateEvent>*) override
+			{
+				if (!a_event || !a_event->objectActivated || !a_event->actionRef || a_event->actionRef.get() != RE::PlayerCharacter::GetSingleton()) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				auto  target = a_event->objectActivated;
+				auto* base = target->GetBaseObject();
+				if (Place::IsWallPainting(base)) {
+					Place::OpenMenu(target.get());
+				} else if (base && (base == g_stand || base == g_easelCanvas[0] || base == g_easelCanvas[1])) {
+					auto handle = target->GetHandle();
+					SKSE::GetTaskInterface()->AddTask([handle] {
+						if (auto ref = handle.get()) {
+							if (auto* stand = StandOf(ref.get())) {
+								RequestEaselMenu(stand);
+							}
+						}
+					});
+				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
@@ -356,80 +345,98 @@ namespace Items
 		{
 			{
 				std::lock_guard lk(g_mtx);
-				if (a_intfc->OpenRecord(kRecordEasels, 1)) {
-					a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_easels.size()));
-					for (const auto& [id, st] : g_easels) {
-						a_intfc->WriteRecordData(id);
-						WriteString(a_intfc, st.wipId);
-						WriteString(a_intfc, st.wipPng);
-						WriteString(a_intfc, st.wipDds);
+				if (a_intfc->OpenRecord(kRecordSlots, 1)) {
+					a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_slots.size()));
+					for (const auto& s : g_slots) {
+						a_intfc->WriteRecordData(static_cast<std::uint8_t>(s.used));
+						WriteString(a_intfc, s.id);
+						WriteString(a_intfc, s.name);
+						a_intfc->WriteRecordData(static_cast<std::uint8_t>(s.portrait));
+						a_intfc->WriteRecordData(s.version);
 					}
 				}
-				if (a_intfc->OpenRecord(kRecordUnhung, 1)) {
-					a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_unhung.size()));
-					for (const auto& p : g_unhung) {
-						WriteString(a_intfc, p.id);
-						WriteString(a_intfc, p.name);
-						WriteString(a_intfc, p.png);
-						a_intfc->WriteRecordData(static_cast<std::int32_t>(p.style));
+				if (a_intfc->OpenRecord(kRecordEasels, 1)) {
+					a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_easels.size()));
+					for (const auto& [id, e] : g_easels) {
+						a_intfc->WriteRecordData(id);
+						a_intfc->WriteRecordData(e.canvas);
+						a_intfc->WriteRecordData(static_cast<std::uint8_t>(e.portrait));
+						a_intfc->WriteRecordData(static_cast<std::int32_t>(e.slot));
+						WriteString(a_intfc, e.workId);
+						WriteString(a_intfc, e.wipDds);
+						WriteString(a_intfc, e.name);
+						a_intfc->WriteRecordData(static_cast<std::uint8_t>(e.painted));
 					}
 				}
 			}
-			Wall::Save(a_intfc);
+			Place::Save(a_intfc);
 		}
 
 		void OnLoad(SKSE::SerializationInterface* a_intfc)
 		{
 			std::uint32_t type = 0, version = 0, length = 0;
 			while (a_intfc->GetNextRecordInfo(type, version, length)) {
-				if (type == kRecordEasels && version == 1) {
+				if (type == kRecordSlots && version == 1) {
 					std::uint32_t n = 0;
 					a_intfc->ReadRecordData(n);
 					std::lock_guard lk(g_mtx);
 					for (std::uint32_t i = 0; i < n; ++i) {
-						RE::FormID oldID = 0, newID = 0;
-						EaselState st;
-						if (a_intfc->ReadRecordData(oldID) != sizeof(oldID) || !ReadString(a_intfc, st.wipId) || !ReadString(a_intfc, st.wipPng) ||
-							!ReadString(a_intfc, st.wipDds)) {
+						Slot         s;
+						std::uint8_t used = 0, portrait = 0;
+						if (a_intfc->ReadRecordData(used) != 1 || !ReadString(a_intfc, s.id) || !ReadString(a_intfc, s.name) ||
+							a_intfc->ReadRecordData(portrait) != 1 || a_intfc->ReadRecordData(s.version) != sizeof(s.version)) {
 							break;
 						}
-						if (a_intfc->ResolveFormID(oldID, newID)) {
-							g_easels[newID] = st;
+						s.used = used != 0;
+						s.portrait = portrait != 0;
+						if (i < g_slots.size()) {
+							g_slots[i] = s;
 						}
 					}
-					spdlog::info("Co-save: {} easel(s)", g_easels.size());
-				} else if (type == kRecordUnhung && version == 1) {
+				} else if (type == kRecordEasels && version == 1) {
 					std::uint32_t n = 0;
 					a_intfc->ReadRecordData(n);
 					std::lock_guard lk(g_mtx);
 					for (std::uint32_t i = 0; i < n; ++i) {
-						Wall::Painting p;
-						std::int32_t   style = 0;
-						if (!ReadString(a_intfc, p.id) || !ReadString(a_intfc, p.name) || !ReadString(a_intfc, p.png) ||
-							a_intfc->ReadRecordData(style) != sizeof(style)) {
+						RE::FormID   stand = 0, canvas = 0;
+						Easel        e;
+						std::uint8_t portrait = 0, painted = 0;
+						std::int32_t slot = -1;
+						if (a_intfc->ReadRecordData(stand) != sizeof(stand) || a_intfc->ReadRecordData(canvas) != sizeof(canvas) ||
+							a_intfc->ReadRecordData(portrait) != 1 || a_intfc->ReadRecordData(slot) != sizeof(slot) || !ReadString(a_intfc, e.workId) ||
+							!ReadString(a_intfc, e.wipDds) || !ReadString(a_intfc, e.name) || a_intfc->ReadRecordData(painted) != 1) {
 							break;
 						}
-						p.style = style;
-						g_unhung.push_back(std::move(p));
+						RE::FormID newStand = 0, newCanvas = 0;
+						if (!a_intfc->ResolveFormID(stand, newStand)) {
+							continue;
+						}
+						if (canvas && a_intfc->ResolveFormID(canvas, newCanvas)) {
+							e.canvas = newCanvas;
+						}
+						e.portrait = portrait != 0;
+						e.slot = slot;
+						e.painted = painted != 0;
+						g_easels[newStand] = e;
 					}
-					spdlog::info("Co-save: {} painting(s) in the pack", g_unhung.size());
 				} else {
-					Wall::Load(a_intfc, type, version);
+					Place::Load(a_intfc, type, version);
 				}
 			}
+			spdlog::info("Co-save loaded: {} easel(s)", g_easels.size());
 		}
 
 		void OnRevert(SKSE::SerializationInterface*)
 		{
 			{
 				std::lock_guard lk(g_mtx);
+				g_slots = {};
 				g_easels.clear();
-				g_unhung.clear();
+				g_menuRequest.reset();
 				g_studioRequest.reset();
 			}
-			g_pickerRequest = false;
 			Art::ForgetAll();
-			Wall::Revert();
+			Place::Revert();
 		}
 	}
 
@@ -439,16 +446,22 @@ namespace Items
 		if (!dh) {
 			return false;
 		}
-		auto misc = [&](std::uint32_t a_id) { return dh->LookupForm<RE::TESObjectMISC>(a_id, Forms::kPlugin); };
-		g_canvas = misc(Forms::kCanvas);
-		g_easelItem = misc(Forms::kEaselItem);
-		g_palette = misc(Forms::kPalette);
-		g_paints = misc(Forms::kPaints);
-		g_painting = misc(Forms::kPainting);
-		g_easelStand = dh->LookupForm<RE::TESObjectACTI>(Forms::kEaselStand, Forms::kPlugin);
-		const bool ok = g_canvas && g_easelItem && g_palette && g_paints && g_painting && g_easelStand;
-		spdlog::info("Items: canvas {} easel {} palette {} paints {} painting {} easel stand {}", g_canvas != nullptr, g_easelItem != nullptr,
-			g_palette != nullptr, g_paints != nullptr, g_painting != nullptr, g_easelStand != nullptr);
+		g_canvas = dh->LookupForm<RE::TESObjectMISC>(Forms::kCanvas, Forms::kPlugin);
+		g_palette = dh->LookupForm<RE::TESObjectMISC>(Forms::kPalette, Forms::kPlugin);
+		g_paints = dh->LookupForm<RE::TESObjectMISC>(Forms::kPaints, Forms::kPlugin);
+		g_easelBook = dh->LookupForm<RE::TESObjectBOOK>(Forms::kEasel, Forms::kPlugin);
+		g_stand = dh->LookupForm<RE::TESObjectACTI>(Forms::kEaselStand, Forms::kPlugin);
+		for (int i = 0; i < 2; ++i) {
+			g_easelCanvas[i] = dh->LookupForm<RE::TESObjectACTI>(Forms::kEaselCanvas[i], Forms::kPlugin);
+		}
+		int books = 0;
+		for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+			g_books[i] = dh->LookupForm<RE::TESObjectBOOK>(Forms::kPaintingFirst + i, Forms::kPlugin);
+			books += g_books[i] ? 1 : 0;
+		}
+		const bool ok = g_canvas && g_palette && g_paints && g_easelBook && g_stand && g_easelCanvas[0] && g_easelCanvas[1] && books == Forms::kPaintingSlots;
+		spdlog::info("Items: canvas {} palette {} paints {} easel {} stand {} canvases {}/{} painting slots {}/{}", g_canvas != nullptr, g_palette != nullptr,
+			g_paints != nullptr, g_easelBook != nullptr, g_stand != nullptr, g_easelCanvas[0] != nullptr, g_easelCanvas[1] != nullptr, books, Forms::kPaintingSlots);
 
 		// The recipes use the tanning rack's keyword by form ID; check it really is CraftingTanningRack.
 		auto* rack = RE::TESForm::LookupByID<RE::BGSKeyword>(Forms::kTanningRackKeyword);
@@ -470,183 +483,32 @@ namespace Items
 			} else {
 				spdlog::error("CraftingTanningRack keyword not found - the recipes may not show up");
 			}
-		} else {
-			spdlog::info("Recipes: tanning rack keyword OK");
 		}
 
+		if (auto* ui = RE::UI::GetSingleton()) {
+			ui->AddEventSink<RE::MenuOpenCloseEvent>(&g_sink);
+		}
 		if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
-			events->AddEventSink<RE::TESContainerChangedEvent>(&g_sink);
+			events->AddEventSink<RE::TESActivateEvent>(&g_sink);
 		}
 		return ok;
 	}
 
 	void OnGameLoaded()
 	{
-		std::vector<std::pair<RE::FormID, EaselState>> easels;
+		for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+			NameBook(i);
+		}
+		std::vector<Easel> easels;
 		{
 			std::lock_guard lk(g_mtx);
-			easels.assign(g_easels.begin(), g_easels.end());
+			for (const auto& [id, e] : g_easels) {
+				easels.push_back(e);
+			}
 		}
-		for (const auto& [id, st] : easels) {
-			if (st.wipDds.empty()) {
-				continue;
-			}
-			Art::EnsureFromPng(st.wipDds, Art::FromUtf8(st.wipPng), kWipW, kWipH);  // re-made if the texture was deleted
-			Art::Show(id, st.wipDds);
+		for (const auto& e : easels) {
+			ShowOnCanvas(e);
 		}
-	}
-
-	std::optional<Easel> TakeStudioRequest()
-	{
-		std::lock_guard lk(g_mtx);
-		auto            out = g_studioRequest;
-		g_studioRequest.reset();
-		return out;
-	}
-
-	std::vector<Wall::Painting> Unhung()
-	{
-		std::lock_guard lk(g_mtx);
-		return g_unhung;
-	}
-
-	bool TakePickerRequest() { return g_pickerRequest.exchange(false); }
-
-	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_rgba)
-	{
-		auto ref = a_easel.get();
-		if (!ref) {
-			return;
-		}
-		const auto id = ref->GetFormID();
-		EaselState st;
-		{
-			std::lock_guard lk(g_mtx);
-			const auto      it = g_easels.find(id);
-			if (it == g_easels.end()) {
-				return;
-			}
-			st = it->second;
-		}
-		std::thread([id, st, px = std::move(a_rgba)] {
-			static std::atomic<std::uint32_t> serial{ 0 };
-			const auto  png = WipFolder() / Art::FromUtf8(st.wipId + ".png");
-			const auto  dds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", st.wipId, ++serial);  // new name: the game caches textures by name
-			std::string err;
-			if (!WritePng(png, px, err)) {
-				spdlog::error("Painting in progress not saved: {}", err);
-				Art::Notify("SkyrimPainter: could not save the painting in progress (see SkyrimPainter.log)");
-				return;
-			}
-			if (!Dds::ConvertPixels(px.data(), Art::kPaintingW, Art::kPaintingH, kWipW, kWipH, Art::DataPath(dds), err)) {
-				spdlog::error("Easel texture not written: {}", err);
-			}
-			const auto pngUtf8 = Art::ToUtf8(png);
-			SKSE::GetTaskInterface()->AddTask([id, pngUtf8, dds, old = st.wipDds] {
-				{
-					std::lock_guard lk(g_mtx);
-					const auto      it = g_easels.find(id);
-					if (it == g_easels.end()) {
-						return;  // packed up meanwhile
-					}
-					it->second.wipPng = pngUtf8;
-					it->second.wipDds = dds;
-				}
-				Art::Show(id, dds);
-				Art::DeleteTexture(old);
-				spdlog::info("Easel {:08X}: painting in progress saved ({})", id, pngUtf8);
-			});
-		}).detach();
-	}
-
-	void Finish(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_rgba, std::string a_name)
-	{
-		std::thread([a_easel, px = std::move(a_rgba), name = std::move(a_name)] {
-			Wall::Painting p;
-			p.id = Art::NewId();
-			p.name = name.empty() ? "Untitled" : name;
-			const auto  png = PaintingsFolder() / Art::FromUtf8(p.id + ".png");
-			std::string err;
-			if (!WritePng(png, px, err)) {
-				spdlog::error("Painting not saved: {}", err);
-				Art::Notify("SkyrimPainter: could not save the painting (see SkyrimPainter.log)");
-				return;
-			}
-			p.png = Art::ToUtf8(png);
-			// the wall texture, ready before it's hung
-			std::string derr;
-			Dds::ConvertPixels(px.data(), Art::kPaintingW, Art::kPaintingH, Art::kPaintingW, Art::kPaintingH, Art::DataPath(Wall::DdsFor(p.id)), derr);
-			SKSE::GetTaskInterface()->AddTask([a_easel, p] {
-				{
-					std::lock_guard lk(g_mtx);
-					g_unhung.push_back(p);
-				}
-				Give(g_painting, 1);
-				Give(g_easelItem, 1);
-				if (auto ref = a_easel.get()) {
-					RemoveEaselRef(ref.get());
-				}
-				spdlog::info("Finished painting \"{}\" ({})", p.name, p.png);
-				Art::Notify(fmt::format("\"{}\" is finished - drop the Painting from your pack to hang it", p.name));
-			});
-		}).detach();
-	}
-
-	void PackUp(RE::ObjectRefHandle a_easel)
-	{
-		SKSE::GetTaskInterface()->AddTask([a_easel] {
-			if (auto ref = a_easel.get()) {
-				RemoveEaselRef(ref.get());
-				Give(g_easelItem, 1);
-				Give(g_canvas, 1);
-				Art::Notify("Easel and canvas packed up");
-			}
-		});
-	}
-
-	void Hang(const std::string& a_id)
-	{
-		SKSE::GetTaskInterface()->AddTask([a_id] {
-			std::optional<Wall::Painting> p;
-			{
-				std::lock_guard lk(g_mtx);
-				for (auto it = g_unhung.begin(); it != g_unhung.end(); ++it) {
-					if (it->id == a_id) {
-						p = *it;
-						g_unhung.erase(it);
-						break;
-					}
-				}
-			}
-			if (p) {
-				Wall::BeginPlacement(*p);
-			} else {
-				Give(g_painting, 1);
-			}
-		});
-	}
-
-	void CancelPick()
-	{
-		SKSE::GetTaskInterface()->AddTask([] { Give(g_painting, 1); });
-	}
-
-	void ReturnPainting(const Wall::Painting& a_painting)
-	{
-		{
-			std::lock_guard lk(g_mtx);
-			g_unhung.push_back(a_painting);
-		}
-		Give(g_painting, 1);
-	}
-
-	void RequestActivate()
-	{
-		SKSE::GetTaskInterface()->AddTask([] {
-			if (!TryEasel()) {
-				Wall::Examine(true);
-			}
-		});
 	}
 
 	void InstallSerialization()
@@ -656,6 +518,313 @@ namespace Items
 		ser->SetSaveCallback(OnSave);
 		ser->SetLoadCallback(OnLoad);
 		ser->SetRevertCallback(OnRevert);
+	}
+
+	bool GetSlot(int a_slot, SlotView& a_out)
+	{
+		std::lock_guard lk(g_mtx);
+		if (a_slot < 0 || a_slot >= Forms::kPaintingSlots || !g_slots[a_slot].used) {
+			return false;
+		}
+		const auto& s = g_slots[a_slot];
+		a_out.name = s.name;
+		a_out.portrait = s.portrait;
+		a_out.dds = SlotDds(s);
+		return true;
+	}
+
+	void EnsureSlotTexture(int a_slot)
+	{
+		Slot s;
+		{
+			std::lock_guard lk(g_mtx);
+			if (a_slot < 0 || a_slot >= Forms::kPaintingSlots || !g_slots[a_slot].used) {
+				return;
+			}
+			s = g_slots[a_slot];
+		}
+		Art::EnsureFromPng(SlotDds(s), SlotDir(s.id) / L"flat.png", Art::Width(s.portrait), Art::Height(s.portrait));
+	}
+
+	void TakePaintingItem(int a_slot)
+	{
+		if (a_slot >= 0 && a_slot < Forms::kPaintingSlots) {
+			Take(g_books[a_slot]);
+		}
+	}
+
+	void GivePaintingItem(int a_slot)
+	{
+		if (a_slot >= 0 && a_slot < Forms::kPaintingSlots) {
+			NameBook(a_slot);
+			Give(g_books[a_slot]);
+		}
+	}
+
+	RE::TESObjectACTI* EaselStandForm() { return g_stand; }
+
+	void EaselPlaced(RE::TESObjectREFR* a_stand)
+	{
+		Take(g_easelBook);
+		{
+			std::lock_guard lk(g_mtx);
+			g_easels[a_stand->GetFormID()] = Easel{};
+		}
+		spdlog::info("Easel {:08X} set up", a_stand->GetFormID());
+		Art::Notify("Easel set up - activate it to put a canvas on");
+	}
+
+	std::optional<EaselMenuInfo> TakeEaselMenuRequest()
+	{
+		std::lock_guard lk(g_mtx);
+		auto            out = std::move(g_menuRequest);
+		g_menuRequest.reset();
+		return out;
+	}
+
+	void SetCanvas(RE::ObjectRefHandle a_easel, bool a_portrait)
+	{
+		WithEasel(a_easel, [a_portrait](RE::TESObjectREFR* a_stand, Easel& e) {
+			if (e.canvas) {
+				return;
+			}
+			if (CountOf(g_canvas) <= 0) {
+				Art::Notify("You need a Blank Canvas");
+				return;
+			}
+			Take(g_canvas);
+			e = Easel{};
+			e.portrait = a_portrait;
+			e.workId = Art::NewId();
+			e.canvas = SpawnCanvas(a_stand, a_portrait);
+		});
+	}
+
+	void EditPainting(RE::ObjectRefHandle a_easel, int a_slot)
+	{
+		WithEasel(a_easel, [a_slot](RE::TESObjectREFR* a_stand, Easel& e) {
+			Slot s;
+			{
+				std::lock_guard lk(g_mtx);
+				if (e.canvas || a_slot < 0 || a_slot >= Forms::kPaintingSlots || !g_slots[a_slot].used) {
+					return;
+				}
+				s = g_slots[a_slot];
+			}
+			if (CountOf(g_books[a_slot]) <= 0) {
+				Art::Notify("That painting isn't in your pack");
+				return;
+			}
+			Take(g_books[a_slot]);
+			e = Easel{};
+			e.portrait = s.portrait;
+			e.slot = a_slot;
+			e.name = s.name;
+			e.painted = true;
+			e.workId = Art::NewId();
+			e.canvas = SpawnCanvas(a_stand, s.portrait);
+			const auto from = SlotDir(s.id), to = WorkDir(e.workId);
+			std::thread([from, to] { Store::CopyDoc(from, to); }).detach();
+			ShowOnCanvas(e);
+		});
+	}
+
+	void TurnCanvas(RE::ObjectRefHandle a_easel)
+	{
+		WithEasel(a_easel, [a_easel](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas) {
+				return;
+			}
+			const bool toPortrait = !e.portrait;
+			const auto dir = WorkDir(e.workId);
+			const bool waitForCopy = e.slot >= 0;
+			// turn the pictures on disk first, then swap the canvas on the easel
+			std::thread([a_easel, dir, toPortrait, waitForCopy] {
+				if (waitForCopy && !Store::HasDoc(dir)) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(500));  // a painting's copy may still be on the way
+				}
+				Store::RotateDoc(dir, toPortrait);
+				auto flat = std::make_shared<std::vector<std::uint8_t>>();
+				int  w = 0, h = 0;
+				const bool haveFlat = Store::LoadFlat(dir, *flat, w, h);
+				WithEasel(a_easel, [toPortrait, haveFlat, flat, w, h](RE::TESObjectREFR* a_stand, Easel& e) {
+					DeleteRef(e.canvas);
+					e.portrait = toPortrait;
+					e.canvas = SpawnCanvas(a_stand, toPortrait);
+					DeleteTextureLater(e.wipDds);
+					e.wipDds.clear();
+					if (haveFlat) {
+						e.wipDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", e.workId, Art::NewId());
+						Art::ConvertAndShow(std::move(*flat), w, h, e.wipDds, toPortrait ? kWipShort : kWipLong, toPortrait ? kWipLong : kWipShort, e.canvas);
+					}
+				});
+			}).detach();
+		});
+	}
+
+	void TakeCanvasOff(RE::ObjectRefHandle a_easel)
+	{
+		WithEasel(a_easel, [](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas) {
+				return;
+			}
+			const int slot = e.slot;
+			ClearCanvas(e);
+			if (slot >= 0) {
+				GivePaintingItem(slot);  // the painting as it was finished (later changes are dropped)
+				Art::Notify("Painting taken off the easel");
+			} else {
+				Give(g_canvas);
+				Art::Notify("Canvas scraped clean and taken off the easel");
+			}
+		});
+	}
+
+	void ScrapePainting(RE::ObjectRefHandle a_easel)
+	{
+		WithEasel(a_easel, [](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas || e.slot < 0) {
+				return;
+			}
+			const int slot = e.slot;
+			Slot      s;
+			{
+				std::lock_guard lk(g_mtx);
+				s = g_slots[slot];
+				g_slots[slot] = Slot{};
+			}
+			NameBook(slot);
+			DeleteTextureLater(SlotDds(s));
+			const auto dir = SlotDir(s.id);
+			std::thread([dir] { Store::RemoveDoc(dir); }).detach();
+			ClearCanvas(e);
+			Give(g_canvas);
+			Art::Notify("Painting scraped off - you have a blank canvas again");
+		});
+	}
+
+	void PickUpEasel(RE::ObjectRefHandle a_easel)
+	{
+		SKSE::GetTaskInterface()->AddTask([a_easel] {
+			auto stand = a_easel.get();
+			if (!stand) {
+				return;
+			}
+			{
+				std::lock_guard lk(g_mtx);
+				const auto      it = g_easels.find(stand->GetFormID());
+				if (it == g_easels.end() || it->second.canvas) {
+					return;
+				}
+				g_easels.erase(it);
+			}
+			DeleteRef(stand->GetFormID());
+			Give(g_easelBook);
+			Art::Notify("Easel folded up");
+		});
+	}
+
+	void Paint(RE::ObjectRefHandle a_easel)
+	{
+		WithEasel(a_easel, [a_easel](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas) {
+				return;
+			}
+			if (CountOf(g_palette) <= 0 || CountOf(g_paints) <= 0) {
+				Art::Notify("You need a Painter's Palette and Paints to paint");
+				return;
+			}
+			std::lock_guard lk(g_mtx);
+			g_studioRequest = Work{ a_easel, WorkDir(e.workId), e.portrait, e.slot, e.name };
+		});
+	}
+
+	std::optional<Work> TakeStudioRequest()
+	{
+		std::lock_guard lk(g_mtx);
+		auto            out = std::move(g_studioRequest);
+		g_studioRequest.reset();
+		return out;
+	}
+
+	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	{
+		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
+		WithEasel(a_easel, [flat, a_w, a_h](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas) {
+				return;
+			}
+			DeleteTextureLater(e.wipDds);
+			// a new name each time: the game keeps textures by name
+			e.wipDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", e.workId, Art::NewId());
+			e.painted = true;
+			const bool portrait = a_h > a_w;
+			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas);
+		});
+	}
+
+	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	{
+		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
+		SKSE::GetTaskInterface()->AddTask([a_easel, name = std::move(a_name), flat, a_w, a_h] {
+			auto stand = a_easel.get();
+			if (!stand) {
+				return;
+			}
+			Easel       e;
+			int         slot = -1;
+			Slot        s;
+			std::string oldDds;
+			{
+				std::lock_guard lk(g_mtx);
+				const auto      it = g_easels.find(stand->GetFormID());
+				if (it == g_easels.end() || !it->second.canvas) {
+					return;
+				}
+				e = it->second;
+				slot = e.slot;
+				if (slot < 0) {
+					for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+						if (!g_slots[i].used) {
+							slot = i;
+							break;
+						}
+					}
+				}
+				if (slot < 0) {
+					Art::Notify("You have 50 paintings already - scrape one off at an easel to finish another");
+					return;
+				}
+				s = g_slots[slot];
+				if (s.used) {
+					oldDds = SlotDds(s);
+				} else {
+					s = Slot{ true, Art::NewId(), {}, false, 0 };
+				}
+				s.name = name.empty() ? std::string("Untitled") : name;
+				s.portrait = a_h > a_w;
+				++s.version;
+				g_slots[slot] = s;     // reserved now
+				it->second = Easel{};  // the easel stands empty again
+			}
+			DeleteRef(e.canvas);
+			DeleteTextureLater(e.wipDds);
+			DeleteTextureLater(oldDds);
+			// files: the layers move to the painting's own folder, the DDS is written at full size
+			const auto work = WorkDir(e.workId), dest = SlotDir(s.id);
+			const auto dds = SlotDds(s);
+			std::thread([work, dest, dds, flat, a_w, a_h, slot, s] {
+				Store::CopyDoc(work, dest);
+				Store::RemoveDoc(work);
+				Art::ConvertNow(flat->data(), a_w, a_h, dds, a_w, a_h);
+				SKSE::GetTaskInterface()->AddTask([slot, s] {
+					GivePaintingItem(slot);
+					Place::RefreshSlot(slot);
+					spdlog::info("Finished \"{}\" (slot {}, {})", s.name, slot + 1, SlotDds(s));
+					Art::Notify(fmt::format("\"{}\" is finished - use it from your inventory to hang it", s.name));
+				});
+			}).detach();
+		});
 	}
 
 	void WriteString(SKSE::SerializationInterface* a_intfc, const std::string& a_s)

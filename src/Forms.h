@@ -19,28 +19,20 @@ namespace Forms
 {
 	inline constexpr std::string_view kPlugin = "SkyrimPainter.esp"sv;
 	inline constexpr std::uint32_t kCanvas = 0x800;
-	inline constexpr std::uint32_t kEaselItem = 0x801;
+	inline constexpr std::uint32_t kEasel = 0x801;          // BOOK
 	inline constexpr std::uint32_t kPalette = 0x802;
 	inline constexpr std::uint32_t kPaints = 0x803;
-	inline constexpr std::uint32_t kPainting = 0x804;
 	inline constexpr std::uint32_t kEaselStand = 0x810;
-	inline constexpr std::uint32_t kFrameFirst = 0x820;
+	inline constexpr std::uint32_t kEaselCanvas[2] = { 0x811, 0x812 };  // landscape, portrait
+	inline constexpr std::uint32_t kWallCanvas[2] = { 0x820, 0x821 };
+	inline constexpr std::uint32_t kPaintingFirst = 0x900;  // BOOK, one per slot
+	inline constexpr int           kPaintingSlots = 50;
 	inline constexpr std::uint32_t kRecipeFirst = 0x830;
 	inline constexpr int           kRecipeCount = 4;
-	inline constexpr RE::FormID    kLeather = 0x000DB5D2;
 	inline constexpr RE::FormID    kTanningRackKeyword = 0x0007866A;
 
-	// Painting on the wall: canvas size in game units (4:3, the painting is 1024 x 768).
-	inline constexpr float kCanvasW = 40.0f;
-	inline constexpr float kCanvasH = 30.0f;
-
-	inline constexpr int kFrameCount = 6;
-	inline constexpr const char* kFrameNames[kFrameCount] = {
-		"Dark Oak",
-		"Honey Oak",
-		"Walnut",
-		"Ebony",
-		"Birch",
-		"Gilded",
-	};
+	// canvas size in game units (the painting is 1024 x 768, or 768 x 1024 standing up)
+	inline constexpr float kCanvasW = 67.0f;
+	inline constexpr float kCanvasH = 49.3f;
+	inline constexpr float kCanvasCentreUp = 77.8f;  // height of the canvas's middle on the easel (landscape)
 }

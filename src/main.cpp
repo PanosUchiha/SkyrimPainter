@@ -15,7 +15,7 @@
 #include "Art.h"
 #include "Items.h"
 #include "Overlay.h"
-#include "Wall.h"
+#include "Place.h"
 
 namespace
 {
@@ -112,8 +112,8 @@ namespace
 				if (!Items::Init()) {
 					spdlog::error("Some item records are missing - is SkyrimPainter.esp enabled?");
 				}
-				if (!Wall::Init()) {
-					spdlog::error("Some frame records are missing - is SkyrimPainter.esp enabled?");
+				if (!Place::Init()) {
+					spdlog::error("The wall painting records are missing - is SkyrimPainter.esp enabled?");
 				}
 				Art::RegisterEvents();
 				spdlog::info("Setup finished");
@@ -127,9 +127,9 @@ namespace
 					blockerDone = true;
 					Overlay::InstallInputBlocker();  // after every plugin that hooks input at the main menu
 				}
-				Wall::CancelPlacement(false);
-				Wall::OnGameLoaded();
+				Place::Cancel(false);
 				Items::OnGameLoaded();
+				Place::OnGameLoaded();
 				break;
 			}
 		default:
