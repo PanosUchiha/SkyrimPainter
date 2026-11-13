@@ -89,7 +89,9 @@ namespace Studio
 		bool                      g_overCanvas = false;
 		bool                      g_hideHud = false;  // Tab: only the canvas stays up
 		bool                      g_guide = false;    // the painter's guide is open (F1)
-		bool                      g_layoutReset = true;
+		int                       g_placeFrames = 3;     // > 0: the panels are put in their places (a few frames, while they size themselves)
+		bool                      g_canvasPlace = true;  // the close-up window is put in its place the next time it shows
+		float                     g_ui = 0.85f;          // HUD size ([Studio] fHudSize)
 		// the hand (Krita: pressure, opacity, smoothing) and the view (zoom, pan, mirror)
 		float                     g_body = 1.0f;    // paint thickness: thin glaze .. full body
 		float                     g_steady = 0.25f; // how long the string the brush hangs on is
@@ -120,6 +122,7 @@ namespace Studio
 		}
 
 		ImU32 Col(const Rgb& c, int a = 255) { return IM_COL32(c[0], c[1], c[2], a); }
+		float U(float a_v) { return Theme::S(a_v) * g_ui; }  // sizes in the panels follow the HUD size
 
 		// ---- the bare canvas: plain white primed canvas with a fine weave (as canvas_blank.dds)
 		float Hash(int x, int y)
@@ -351,7 +354,7 @@ namespace Studio
 					ImGui::SetTooltip("Show / hide this layer");
 				}
 				ImGui::SameLine();
-				if (ImGui::Selectable(layers[i].name.c_str(), g_paint.Current() == i, 0, ImVec2(a_w - ImGui::GetFrameHeight() - Theme::S(8), 0))) {
+				if (ImGui::Selectable(layers[i].name.c_str(), g_paint.Current() == i, 0, ImVec2(a_w - ImGui::GetFrameHeight() - U(8), 0))) {
 					g_paint.SetCurrent(i);
 				}
 				ImGui::PopID();
@@ -401,7 +404,7 @@ namespace Studio
 		void DrawTools(float a_w)
 		{
 			DrawLayers(a_w);
-			ImGui::Dummy(ImVec2(0, Theme::S(8)));
+			ImGui::Dummy(ImVec2(0, U(8)));
 			Theme::SectionLabel("History");
 			const float hw = (a_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 			ImGui::BeginDisabled(!g_paint.CanUndo());
@@ -650,7 +653,7 @@ namespace Studio
 		void DrawHand(float a_w)
 		{
 			Theme::SectionLabel("Your hand");
-			const float lw = Theme::S(92.0f);
+			const float lw = U(92.0f);
 			auto        row = [&](const char* a_label, const char* a_id, float* a_v, float a_min, float a_max, const char* a_fmt, const char* a_tip) {
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted(a_label);
@@ -686,7 +689,7 @@ namespace Studio
 			} else {
 				dl->AddEllipseFilled(p0 + ImVec2(a_w, ph) * 0.5f, a_w * 0.48f, ph * 0.48f, IM_COL32(150, 100, 60, 255));
 			}
-			const float blobR = Theme::S(17.0f);
+			const float blobR = U(17.0f);
 			int         hoverSpot = -1;
 			for (int i = 0; i < static_cast<int>(g_spots.size()); ++i) {
 				const ImVec2 c = p0 + ImVec2(g_spots[i].x * a_w, g_spots[i].y * ph);
@@ -699,7 +702,7 @@ namespace Studio
 			const bool overPalette = ImGui::IsMouseHoveringRect(p0, p0 + ImVec2(a_w, ph));
 			if (hoverSpot >= 0) {
 				const auto& s = g_spots[hoverSpot];
-				dl->AddCircle(p0 + ImVec2(s.x * a_w, s.y * ph), blobR + 3.0f, Theme::Gold(), 0, Theme::S(2.0f));
+				dl->AddCircle(p0 + ImVec2(s.x * a_w, s.y * ph), blobR + 3.0f, Theme::Gold(), 0, U(2.0f));
 				ImGui::SetTooltip("%s", s.mixed ? "Your mix (Ctrl + click to scrape it off)" : kPigments[std::min(hoverSpot, PaletteSpots::kCount - 1)].name);
 			}
 			if (click && overPalette) {
@@ -731,10 +734,10 @@ namespace Studio
 			}
 
 			// ---- brushes and the rag
-			ImGui::Dummy(ImVec2(0, Theme::S(6)));
+			ImGui::Dummy(ImVec2(0, U(6)));
 			Theme::SectionLabel("Brushes");
-			const float  cell = (a_w - Theme::S(70.0f)) / Paint::kBrushCount;
-			const float  rowH = Theme::S(96.0f);
+			const float  cell = (a_w - U(70.0f)) / Paint::kBrushCount;
+			const float  rowH = U(96.0f);
 			const ImVec2 b0 = ImGui::GetCursorScreenPos();
 			ImGui::Dummy(ImVec2(a_w, rowH + ImGui::GetTextLineHeightWithSpacing()));
 			for (int i = 0; i < Paint::kBrushCount; ++i) {
@@ -771,13 +774,13 @@ namespace Studio
 				}
 			}
 			// the rag
-			const ImVec2 r0 = b0 + ImVec2(cell * Paint::kBrushCount + Theme::S(6), Theme::S(14));
-			const ImVec2 r1 = r0 + ImVec2(Theme::S(60), rowH - Theme::S(28));
-			dl->AddRectFilled(r0, r1, IM_COL32(205, 196, 176, 255), Theme::S(8));
+			const ImVec2 r0 = b0 + ImVec2(cell * Paint::kBrushCount + U(6), U(14));
+			const ImVec2 r1 = r0 + ImVec2(U(60), rowH - U(28));
+			dl->AddRectFilled(r0, r1, IM_COL32(205, 196, 176, 255), U(8));
 			for (int k = 1; k < 4; ++k) {
-				dl->AddLine(r0 + ImVec2(0, (r1.y - r0.y) * k / 4), r0 + ImVec2(r1.x - r0.x, (r1.y - r0.y) * k / 4 + Theme::S(4)), IM_COL32(160, 150, 130, 255), 1.0f);
+				dl->AddLine(r0 + ImVec2(0, (r1.y - r0.y) * k / 4), r0 + ImVec2(r1.x - r0.x, (r1.y - r0.y) * k / 4 + U(4)), IM_COL32(160, 150, 130, 255), 1.0f);
 			}
-			dl->AddText(ImVec2(r0.x + Theme::S(14), r1.y + Theme::S(14)), Theme::InkSoft(), "Rag");
+			dl->AddText(ImVec2(r0.x + U(14), r1.y + U(14)), Theme::InkSoft(), "Rag");
 			if (ImGui::IsMouseHoveringRect(r0, r1)) {
 				ImGui::SetTooltip("%s", g_brush.type >= 0 ? "Click: wipe the brush clean (a clean brush blends the wet paint)"
 				                  : g_rag              ? "Click: put the rag down"
@@ -792,11 +795,11 @@ namespace Studio
 				}
 			}
 			if (g_rag) {
-				dl->AddRect(r0 - ImVec2(3, 3), r1 + ImVec2(3, 3), Theme::GoldDim(), Theme::S(8), 0, 1.0f);
+				dl->AddRect(r0 - ImVec2(3, 3), r1 + ImVec2(3, 3), Theme::GoldDim(), U(8), 0, 1.0f);
 			}
 
 			// ---- what's in hand
-			ImGui::Dummy(ImVec2(0, Theme::S(4)));
+			ImGui::Dummy(ImVec2(0, U(4)));
 			if (g_rag) {
 				Theme::TextColoredWrapped(Theme::InkSoft(), "The rag in hand - wipe paint off the canvas.");
 			} else if (g_brush.type < 0) {
@@ -804,11 +807,11 @@ namespace Studio
 			} else {
 				const ImVec2 sw = ImGui::GetCursorScreenPos();
 				if (g_brush.Loaded()) {
-					dl->AddRectFilled(sw, sw + ImVec2(Theme::S(22), Theme::S(22)), Col(g_brush.color), 4.0f);
+					dl->AddRectFilled(sw, sw + ImVec2(U(22), U(22)), Col(g_brush.color), 4.0f);
 				} else {
-					dl->AddRect(sw, sw + ImVec2(Theme::S(22), Theme::S(22)), Theme::InkSoft(), 4.0f);
+					dl->AddRect(sw, sw + ImVec2(U(22), U(22)), Theme::InkSoft(), 4.0f);
 				}
-				ImGui::Dummy(ImVec2(Theme::S(26), Theme::S(22)));
+				ImGui::Dummy(ImVec2(U(26), U(22)));
 				ImGui::SameLine();
 				static constexpr const char* kSizeNames[Paint::kSizeCount] = { "very small", "small", "", "large", "very large" };
 				const char* sz = kSizeNames[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)];
@@ -817,9 +820,9 @@ namespace Studio
 					ImGui::SetTooltip("[ and ] take a smaller or larger brush of the same kind");
 				}
 			}
-			ImGui::Dummy(ImVec2(0, Theme::S(6)));
+			ImGui::Dummy(ImVec2(0, U(6)));
 			DrawHand(a_w);
-			ImGui::Dummy(ImVec2(0, Theme::S(4)));
+			ImGui::Dummy(ImVec2(0, U(4)));
 			Theme::TextColoredWrapped(Theme::InkSoft(),
 				"Click a brush to pick it up, a paint to load it (a second paint mixes in), the bare palette to put a mix down, the rag "
 				"to wipe the brush. A clean brush blends the wet paint. Ctrl + click on the canvas takes up the colour there. F1: the guide.");
@@ -861,15 +864,18 @@ namespace Studio
 			ImGui::EndTabItem();
 		}
 
-		void DrawGuide()
+		void DrawGuide(bool a_looking)
 		{
 			if (!g_guide) {
 				return;
 			}
+			if (a_looking) {
+				ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.25f);
+			}
 			const ImVec2 screen = ImGui::GetIO().DisplaySize;
 			ImGui::SetNextWindowPos(screen * 0.5f, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 			ImGui::SetNextWindowSize(ImVec2(Theme::S(640.0f), Theme::S(520.0f)), ImGuiCond_Appearing);
-			if (Theme::BeginWindow("##guide", nullptr)) {
+			if (Theme::BeginWindow("##guide", nullptr, a_looking ? ImGuiWindowFlags_NoInputs : 0)) {
 				ImGui::TextColored(ImVec4(0.92f, 0.85f, 0.68f, 1.0f), "The Painter's Guide");
 				ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - Theme::S(90.0f));
 				if (Theme::Button("Close", ImVec2(Theme::S(90.0f), 0))) {
@@ -957,6 +963,9 @@ namespace Studio
 				ImGui::EndChild();
 			}
 			Theme::EndWindow();
+			if (a_looking) {
+				ImGui::PopStyleVar();
+			}
 		}
 
 		bool ConfirmPopup(const char* a_id, const char* a_text, const char* a_yes)
@@ -1024,7 +1033,13 @@ namespace Studio
 			return false;
 		}
 		std::snprintf(g_name, sizeof g_name, "%s", a_work.name.c_str());
-		g_layoutReset = true;  // portrait and landscape lay out differently
+		g_placeFrames = 3;  // portrait and landscape lay out differently
+		g_canvasPlace = true;
+		{
+			char buf[32]{};
+			::GetPrivateProfileStringA("Studio", "fHudSize", "0.85", buf, sizeof buf, Overlay::IniPath().c_str());
+			g_ui = std::clamp(static_cast<float>(std::atof(buf)), 0.6f, 1.2f);
+		}
 		g_hideHud = false;
 		g_lastCanvas = ImVec2(-1e9f, -1e9f);
 		g_closeUp = false;
@@ -1072,8 +1087,9 @@ namespace Studio
 
 		// No backdrop: the world stays in view so you can paint what's in front of you. The canvas sits on
 		// the left (drag its top bar to move it, the corner to resize), the palette and the tools on the right.
-		const ImGuiCond cond = g_layoutReset ? ImGuiCond_Always : ImGuiCond_Appearing;
-		const float     panelW = Theme::S(400.0f), toolsW = Theme::S(260.0f), margin = Theme::S(18.0f);
+		// panels keep wherever you put them; they are put in their places on opening and by "Reset the layout"
+		const ImGuiCond cond = g_placeFrames > 0 ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+		const float     panelW = U(330.0f), toolsW = U(220.0f), margin = Theme::S(14.0f);
 		if (g_closeUp) {
 			const float aspect = static_cast<float>(g_paint.Width()) / static_cast<float>(g_paint.Height());
 			const float bar = ImGui::GetFrameHeight() + Theme::S(8.0f);
@@ -1083,8 +1099,10 @@ namespace Studio
 				cw = maxW;
 				ch = cw / aspect;
 			}
-			ImGui::SetNextWindowPos(ImVec2(margin, (screen.y - ch - bar) * 0.45f), cond);
-			ImGui::SetNextWindowSize(ImVec2(cw + Theme::S(16.0f), ch + bar + Theme::S(16.0f)), cond);
+			const ImGuiCond ccond = (g_placeFrames > 0 || g_canvasPlace) ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+			g_canvasPlace = false;
+			ImGui::SetNextWindowPos(ImVec2(margin, (screen.y - ch - bar) * 0.45f), ccond);
+			ImGui::SetNextWindowSize(ImVec2(cw + Theme::S(16.0f), ch + bar + Theme::S(16.0f)), ccond);
 			ImGui::SetNextWindowSizeConstraints(ImVec2(Theme::S(240.0f), Theme::S(200.0f)), screen);
 			ImGui::SetNextWindowBgAlpha(looking ? 0.0f : 0.35f);
 			if (ImGui::Begin("##easelcanvas", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
@@ -1114,11 +1132,18 @@ namespace Studio
 			ImGui::End();
 		}
 
-		if (!g_hideHud && !looking) {
-			// palette, brushes, rag, pressure: right edge, bottom
+		if (!g_hideHud) {
+			// While you look around (right mouse held) the panels stay where they are, faded and out of
+			// the way of the mouse - they never close, so nothing moves or resets.
+			const int faded = looking ? ImGuiWindowFlags_NoInputs : 0;
+			if (looking) {
+				ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.25f);
+			}
+			// palette, brushes, rag, your hand: right edge, bottom
 			ImGui::SetNextWindowPos(ImVec2(screen.x - margin, screen.y - margin), cond, ImVec2(1.0f, 1.0f));
 			ImGui::SetNextWindowSize(ImVec2(panelW, 0.0f), ImGuiCond_Always);
-			if (Theme::BeginWindow("##palettewin", nullptr)) {
+			if (Theme::BeginWindow("##palettewin", nullptr, faded)) {
+				ImGui::SetWindowFontScale(g_ui);
 				DrawPalettePanel(ImGui::GetContentRegionAvail().x);
 			}
 			Theme::EndWindow();
@@ -1126,10 +1151,11 @@ namespace Studio
 			// layers, history, step away / finish: right edge, top
 			ImGui::SetNextWindowPos(ImVec2(screen.x - margin, margin), cond, ImVec2(1.0f, 0.0f));
 			ImGui::SetNextWindowSize(ImVec2(toolsW, 0.0f), ImGuiCond_Always);
-			if (Theme::BeginWindow("##toolswin", nullptr)) {
+			if (Theme::BeginWindow("##toolswin", nullptr, faded)) {
+				ImGui::SetWindowFontScale(g_ui);
 				const float w = ImGui::GetContentRegionAvail().x;
 				DrawTools(w);
-				ImGui::Dummy(ImVec2(0, Theme::S(8)));
+				ImGui::Dummy(ImVec2(0, U(6)));
 				if (Theme::Button("Finish painting", ImVec2(w, 0), true)) {
 					g_openFinish = true;
 				}
@@ -1141,7 +1167,6 @@ namespace Studio
 				}
 				if (Theme::Button(g_closeUp ? "Paint on the easel" : "Close-up", ImVec2(w, 0))) {
 					g_closeUp = !g_closeUp;
-					g_layoutReset = g_closeUp;
 				}
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("%s", g_closeUp ? "Paint straight onto the canvas standing on the easel (C)" : "A flat close-up of the canvas, to zoom in on details or see it in a mirror (C)");
@@ -1153,19 +1178,32 @@ namespace Studio
 					ImGui::SetTooltip("How everything works (F1)");
 				}
 				if (Theme::Button("Reset the layout", ImVec2(w, 0))) {
-					g_layoutReset = true;
-				} else {
-					g_layoutReset = false;
+					g_placeFrames = 3;
+					g_canvasPlace = true;
+				}
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted("HUD size");
+				ImGui::SameLine();
+				float size = g_ui * 100.0f;
+				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+				if (ImGui::SliderFloat("##hudsize", &size, 60.0f, 120.0f, "%.0f%%")) {
+					g_ui = std::clamp(size / 100.0f, 0.6f, 1.2f);
+				}
+				if (ImGui::IsItemDeactivatedAfterEdit()) {
+					::WritePrivateProfileStringA("Studio", "fHudSize", fmt::format("{:.2f}", g_ui).c_str(), Overlay::IniPath().c_str());
+					g_placeFrames = 3;  // the panels change size: put them back against the edges
 				}
 			}
 			Theme::EndWindow();
-		} else {
-			g_layoutReset = false;
+			if (looking) {
+				ImGui::PopStyleVar();
+			}
+		}
+		if (g_placeFrames > 0) {
+			--g_placeFrames;
 		}
 
-		if (!looking) {
-			DrawGuide();
-		}
+		DrawGuide(looking);
 
 		// ---- popups
 		if (g_openClear) {
@@ -1230,7 +1268,6 @@ namespace Studio
 				}
 				if (ImGui::IsKeyPressed(ImGuiKey_C, false) && !io.KeyCtrl) {
 					g_closeUp = !g_closeUp;
-					g_layoutReset = g_closeUp;
 				}
 				if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_0, false)) {
 					g_zoom = 1.0f;
