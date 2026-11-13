@@ -98,7 +98,7 @@ jobs:
           Copy-Item -Recurse Data/textures "$out/Data/"
           Copy-Item assets/fonts/* "$out/Data/SKSE/Plugins/SkyrimPainter/Fonts/"
           Copy-Item LICENSE.txt "$out/Data/SKSE/Plugins/SkyrimPainter/"   # GPL-3.0: the full license ships with the mod
-          Copy-Item CREDITS.txt "$out/Data/SKSE/Plugins/SkyrimPainter/"   # CC BY attribution for the easel and brush
+          Copy-Item CREDITS.txt "$out/Data/SKSE/Plugins/SkyrimPainter/"   # attribution for the easel, brush and palette
           Get-ChildItem -Recurse $out | Format-Table FullName, Length
 
       - name: Publish package to dist branch

@@ -3,12 +3,17 @@
 
 Source files are not kept in the repository. To re-run:
   1. Unzip "easel-easel-with-painting" (Every 3D, CC BY 4.0) and "cc0-paint-brush-3" (plaggy, CC BY 4.0).
+     Palette: "Round Artist Palette" by LUMI-Studio (CGTrader, royalty free, no AI training).
   2. Export their FBX files to OBJ with transforms applied (assimp):
        assimp export source/easel3.fbx easel.obj -ptv
        assimp export source/PaintBrush3.fbx brush.obj -ptv
-  3. python3 tools/convert_models.py <easel.obj> <easel textures dir> <brush.obj> <brush textures dir>
+       assimp export SM_Palette_02a.fbx palette.obj -ptv
+  3. Clean the paint off the palette: tools/clean_palette_texture.py (see that script).
+  4. python3 tools/convert_models.py easel <easel.obj> <easel textures dir>
+     python3 tools/convert_models.py brush <brush.obj> <brush textures dir>
+     python3 tools/convert_models.py palette <palette.obj> <clean base colour png> <clean ao png>
 
-Writes Data/meshes/SkyrimPainter/{Easel,Item_Easel,Item_Paint}.nif, their textures in
+Writes Data/meshes/SkyrimPainter/{Easel,Item_Easel,Item_Paint,Item_Palette}.nif, their textures in
 Data/textures/SkyrimPainter/ and updates tools/bounds.json.
 
 The easel file holds three easels; the two side ones carry a canvas. The left one (Cube.036) is used.
@@ -184,13 +189,34 @@ def brush(obj, texdir):
     return bounds([s])
 
 
+def palette(obj, base_png, ao_png):
+    V, VT, VN, groups = load_obj(obj)
+    faces = [f for g in groups.values() for f in g]
+    used = np.array([V[a] for f in faces for a, _, _ in f])
+    cx, cz = (used[:, 0].min() + used[:, 0].max()) / 2, (used[:, 2].min() + used[:, 2].max()) / 2
+    y0 = used[:, 1].min()
+    def xf(p):  # lies flat, top face up
+        return to_skyrim(((p[0] - cx) * CM_TO_UNITS, (p[1] - y0) * CM_TO_UNITS, (p[2] - cz) * CM_TO_UNITS))
+    s = build_shape("SPPalette", TEX + "palette.dds", V, VT, VN, faces, xf)
+    save_dds_dxt1(bake_ao(base_png, ao_png), os.path.join(ROOT, "Data", "textures", "SkyrimPainter", "palette.dds"), 1024)
+    write_mesh(os.path.join(OUT, "Item_Palette.nif"), "SkyrimPainter_Item_Palette", [s])
+    print(f"palette: {len(faces)} faces")
+    return bounds([s])
+
+
 def main():
-    if len(sys.argv) != 5:
+    path = os.path.join(ROOT, "tools", "bounds.json")
+    b = json.load(open(path)) if os.path.exists(path) else {}
+    what, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 2 else (None, [])
+    if what == "easel" and len(args) == 2:
+        b["Easel"] = b["Item_Easel"] = easel(*args)
+    elif what == "brush" and len(args) == 2:
+        b["Item_Paint"] = brush(*args)
+    elif what == "palette" and len(args) == 3:
+        b["Item_Palette"] = palette(*args)
+    else:
         raise SystemExit(__doc__)
-    b = json.load(open(os.path.join(ROOT, "tools", "bounds.json")))
-    b["Easel"] = b["Item_Easel"] = easel(sys.argv[1], sys.argv[2])
-    b["Item_Paint"] = brush(sys.argv[3], sys.argv[4])
-    json.dump(b, open(os.path.join(ROOT, "tools", "bounds.json"), "w"), indent=1)
+    json.dump(b, open(path, "w"), indent=1)
 
 
 if __name__ == "__main__":

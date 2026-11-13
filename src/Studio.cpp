@@ -111,29 +111,28 @@ namespace Studio
 			return static_cast<float>((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;
 		}
 
-		float ValueNoise(float x, float y)
-		{
-			const int   xi = static_cast<int>(std::floor(x)), yi = static_cast<int>(std::floor(y));
-			const float tx = x - xi, ty = y - yi;
-			const float sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
-			const float a = Hash(xi, yi), b = Hash(xi + 1, yi), c = Hash(xi, yi + 1), d = Hash(xi + 1, yi + 1);
-			return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
-		}
-
+		// A plain white primed canvas with a fine weave (threads every 3 px, a little uneven).
+		// Same look as Data/textures/SkyrimPainter/canvas_blank.dds (tools/textures.py).
 		void MakeBlank()
 		{
 			if (!g_blank.empty()) {
 				return;
 			}
 			g_blank.resize(static_cast<std::size_t>(W) * H * 4);
+			std::vector<float> col(W), row(H);
+			for (int x = 0; x < W; ++x) {
+				col[x] = (Hash(x, 7) - 0.5f) * 3.0f;
+			}
+			for (int y = 0; y < H; ++y) {
+				row[y] = (Hash(13, y) - 0.5f) * 3.0f;
+			}
 			for (int y = 0; y < H; ++y) {
 				for (int x = 0; x < W; ++x) {
-					const float weave = std::sin(x * 2.094f) * std::sin(y * 2.094f) * 4.0f;
-					const float blotch = ValueNoise(x / 64.0f, y / 64.0f) * 10.0f;
+					const float d = std::sin(x * 2.094f) * std::sin(y * 2.094f) * 3.0f + col[x] + row[y];
 					auto*       p = &g_blank[(static_cast<std::size_t>(y) * W + x) * 4];
-					p[0] = static_cast<std::uint8_t>(std::clamp(238.0f + weave - blotch, 0.0f, 255.0f));
-					p[1] = static_cast<std::uint8_t>(std::clamp(232.0f + weave - blotch, 0.0f, 255.0f));
-					p[2] = static_cast<std::uint8_t>(std::clamp(218.0f + weave - blotch * 1.2f, 0.0f, 255.0f));
+					p[0] = static_cast<std::uint8_t>(std::clamp(248.0f + d, 0.0f, 255.0f));
+					p[1] = static_cast<std::uint8_t>(std::clamp(247.0f + d, 0.0f, 255.0f));
+					p[2] = static_cast<std::uint8_t>(std::clamp(244.0f + d, 0.0f, 255.0f));
 					p[3] = 255;
 				}
 			}

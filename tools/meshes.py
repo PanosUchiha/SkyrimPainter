@@ -7,7 +7,7 @@ Conventions (same as Hearthframe): Z up, the front of a canvas faces +Y.
   models (see CREDITS.txt). The easel's canvas front is the shape "SPCanvas".
 - Painting_<Style>.nif: framed painting for walls, origin at the centre of the frame's back,
   painting surface "SPCanvas".
-- Placeholder item models: Item_Canvas, Item_Palette.
+- Placeholder item model: Item_Canvas.
 No collision on purpose: the plugin finds easels and paintings by aim itself, and dropped items
 are handled by the plugin straight away.
 
@@ -210,19 +210,11 @@ def item_canvas():
     return [edge, front]
 
 
-def item_palette():
-    pal = Shape("SPPalette", TEX + "palette.dds")
-    w, d, t = 13.0, 10.0, 0.8
-    pal.box((-w, -d, 0), (w, d, t), tile=1.0, faces="xXyYz")
-    pal.quad((-w, -d, t), (w, -d, t), (w, d, t), (-w, d, t), ((0, 1), (1, 1), (1, 0), (0, 0)), (0, 0, 0))
-    return [pal]
-
-
 def main():
     path = os.path.join(ROOT, "tools", "bounds.json")
     bounds = json.load(open(path)) if os.path.exists(path) else {}  # keeps the converted models' entries
-    # Easel, Item_Easel and Item_Paint come from the third-party models (tools/convert_models.py)
-    models = {"Item_Canvas": item_canvas(), "Item_Palette": item_palette()}
+    # Easel, Item_Easel, Item_Paint and Item_Palette come from the third-party models (tools/convert_models.py)
+    models = {"Item_Canvas": item_canvas()}
     for stem, _, tex in FRAME_STYLES:
         models["Painting_" + stem] = painting(tex)
     for stem, shapes in models.items():

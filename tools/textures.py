@@ -60,12 +60,13 @@ def wood(size, base, dark, rings=22, wobble=0.6):
 
 
 def main():
-    # ---- canvas: off-white linen with a fine weave (1024 x 768 = the painting's 4:3)
+    # ---- canvas: plain white primed canvas with a fine weave (1024 x 768 = the painting's 4:3)
+    # (keep in step with Studio.cpp MakeBlank, which starts a new painting the same way)
     h, w = 768, 1024
     y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-    weave = (np.sin(x * np.pi / 1.5) * np.sin(y * np.pi / 1.5)) * 4.0
-    blotch = smooth_noise(h, w, 12, 16) * 10.0
-    canvas = np.stack([238 + weave - blotch, 232 + weave - blotch, 218 + weave - blotch * 1.2], axis=2)
+    weave = np.sin(x * 2.094) * np.sin(y * 2.094) * 3.0          # threads every 3 px
+    threads = (rng.random((1, w)) - 0.5) * 3.0 + (rng.random((h, 1)) - 0.5) * 3.0  # uneven threads
+    canvas = np.stack([248 + weave + threads, 247 + weave + threads, 244 + weave + threads], axis=2)
     save("canvas_blank", canvas)
 
     # ---- frame woods (the easel's texture comes from tools/convert_models.py)
@@ -84,19 +85,6 @@ def main():
     k = (n * 0.7 + g * 0.3)[..., None]
     gold = np.array((214, 168, 72), np.float32) * (0.75 + 0.45 * k)
     save("frame_gilded", gold)
-
-    # ---- palette: honey wood with blobs of paint around the edge
-    pal = wood(256, (190, 138, 84), (132, 88, 46), rings=14)
-    y, x = np.mgrid[0:256, 0:256].astype(np.float32)
-    blobs = [((60, 60), (196, 40, 36)), ((128, 40), (232, 196, 52)), ((196, 60), (40, 84, 170)),
-             ((214, 128), (52, 130, 70)), ((196, 196), (238, 238, 232)), ((60, 196), (30, 26, 24)),
-             ((40, 128), (150, 90, 160)), ((128, 214), (220, 120, 40))]
-    for (cx, cy), col in blobs:
-        r = 18 + rng.random() * 8
-        d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2) + smooth_noise(256, 256, 16, 16) * 8
-        m = np.clip((r - d) / 3.0, 0, 1)[..., None]
-        pal = pal * (1 - m) + np.array(col, np.float32) * m
-    save("palette", pal)
 
     # ---- flat normal map, alpha 0 = no specular (matte)
     flat = np.zeros((4, 4, 4), np.uint8)
