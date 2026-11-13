@@ -128,13 +128,45 @@ namespace Paint
 		m_h = a_h;
 		m_blank = a_blank;
 		m_layers.clear();
-		m_layers.push_back({ "Background", true, 1.0f, std::vector<std::uint8_t>(static_cast<std::size_t>(a_w) * a_h * 4, 0) });
+		m_layers.push_back({ "Underpainting", true, 1.0f, std::vector<std::uint8_t>(static_cast<std::size_t>(a_w) * a_h * 4, 0) });
+		MakeGrain();
 		m_current = 0;
 		m_undo.clear();
 		m_redo.clear();
 		m_changed = false;
 		m_stroking = false;
 		RecompositeAll();
+	}
+
+	void Painting::MakeGrain()
+	{
+		// the bare canvas is white with the weave pressed into it: brighter = a raised thread
+		const std::size_t n = static_cast<std::size_t>(m_w) * m_h;
+		m_grain.assign(n, 255);
+		if (m_blank.size() < n * 4) {
+			return;
+		}
+		for (std::size_t i = 0; i < n; ++i) {
+			const float l = (m_blank[i * 4] + m_blank[i * 4 + 1] + m_blank[i * 4 + 2]) / 3.0f;
+			m_grain[i] = static_cast<std::uint8_t>(std::clamp((l - 238.0f) / 14.0f, 0.0f, 1.0f) * 255.0f);
+		}
+	}
+
+	void Painting::SetLayerBlend(int a_i, Blend a_blend)
+	{
+		if (a_i >= 0 && a_i < static_cast<int>(m_layers.size()) && m_layers[a_i].blend != a_blend) {
+			m_layers[a_i].blend = a_blend;
+			m_changed = true;
+			RecompositeAll();
+		}
+	}
+
+	void Painting::SetLayerLockAlpha(int a_i, bool a_on)
+	{
+		if (a_i >= 0 && a_i < static_cast<int>(m_layers.size())) {
+			m_layers[a_i].lockAlpha = a_on;
+			m_changed = true;
+		}
 	}
 
 	void Painting::SetCurrent(int a_i) { m_current = std::clamp(a_i, 0, static_cast<int>(m_layers.size()) - 1); }
@@ -279,9 +311,15 @@ namespace Paint
 					if (a <= 0.0f) {
 						continue;
 					}
-					r += (l.px[i] - r) * a;
-					g += (l.px[i + 1] - g) * a;
-					b += (l.px[i + 2] - b) * a;
+					if (l.blend == Blend::Glaze) {  // a transparent coat: darkens and tints what is under it
+						r += (r * l.px[i] / 255.0f - r) * a;
+						g += (g * l.px[i + 1] / 255.0f - g) * a;
+						b += (b * l.px[i + 2] / 255.0f - b) * a;
+					} else {
+						r += (l.px[i] - r) * a;
+						g += (l.px[i + 1] - g) * a;
+						b += (l.px[i + 2] - b) * a;
+					}
 				}
 				m_composite[i] = static_cast<std::uint8_t>(r + 0.5f);
 				m_composite[i + 1] = static_cast<std::uint8_t>(g + 0.5f);
@@ -299,12 +337,16 @@ namespace Paint
 		return r;
 	}
 
-	void Painting::BeginStroke(Brush& a_brush, float a_x, float a_y, float a_pressure)
+	void Painting::BeginStroke(Brush& a_brush, float a_x, float a_y, float a_pressure, const StrokeStyle& a_style)
 	{
-		if (m_layers.empty() || !a_brush.Loaded()) {
+		if (m_layers.empty() || (!a_style.lift && a_brush.type < 0)) {
 			return;
 		}
 		PushUndo(m_current);
+		m_style = a_style;
+		m_style.body = std::clamp(m_style.body, 0.05f, 1.0f);
+		m_cover.assign(static_cast<std::size_t>(m_w) * m_h, 0);
+		m_hasPrevDab = false;
 		m_stroking = true;
 		m_lastX = a_x;
 		m_lastY = a_y;
@@ -330,7 +372,7 @@ namespace Paint
 			m_moved = true;
 			m_dirX = nx;
 			m_dirY = ny;
-			Dab(a_brush, m_lastX, m_lastY, m_firstPressure, m_dirX, m_dirY);
+			Dab(a_brush, m_lastX, m_lastY, std::min(m_firstPressure, a_pressure), m_dirX, m_dirY);
 		}
 		m_dirX = m_dirX * 0.7f + nx * 0.3f;
 		m_dirY = m_dirY * 0.7f + ny * 0.3f;
@@ -340,8 +382,9 @@ namespace Paint
 			m_dirY /= dl;
 		}
 		const auto& bt = kBrushes[std::clamp(a_brush.type, 0, kBrushCount - 1)];
-		const float radius = bt.radius * (0.45f + 0.55f * a_pressure);
-		const float step = std::max(0.75f, radius * 0.18f);
+		const float radius = m_style.lift ? 24.0f : bt.radius * kSizes[std::clamp(a_brush.size, 0, kSizeCount - 1)] * (0.45f + 0.55f * a_pressure);
+		const float along = m_style.lift ? radius : radius / bt.aspect;  // a flat brush is short along the stroke
+		const float step = std::max(0.6f, along * (a_brush.Loaded() || m_style.lift ? 0.2f : 0.1f));  // smearing wants close dabs
 		float       t = step - m_carry;
 		while (t <= dist) {
 			Dab(a_brush, m_lastX + nx * t, m_lastY + ny * t, a_pressure, m_dirX, m_dirY);
@@ -362,84 +405,227 @@ namespace Paint
 
 	void Painting::Dab(Brush& a_brush, float a_x, float a_y, float a_pressure, float a_dirX, float a_dirY)
 	{
-		if (!a_brush.Loaded()) {
+		const bool lift = m_style.lift;
+		const bool smear = !lift && !a_brush.Loaded();
+		if (!lift && a_brush.type < 0) {
 			return;
 		}
 		const auto& bt = kBrushes[std::clamp(a_brush.type, 0, kBrushCount - 1)];
 		const float p = std::clamp(a_pressure, 0.05f, 1.0f);
-		const float rAcross = bt.radius * (0.45f + 0.55f * p);    // pressing harder splays the bristles
-		const float rAlong = rAcross / bt.aspect;
+		// pressing harder splays the bristles; the rag is a soft wad of cloth
+		const float rAcross = lift ? 24.0f * (0.6f + 0.4f * p) : bt.radius * kSizes[std::clamp(a_brush.size, 0, kSizeCount - 1)] * (0.45f + 0.55f * p);
+		const float rAlong = lift ? rAcross : rAcross / bt.aspect;
 		const float reach = std::max(rAcross, rAlong) + 1.0f;
 		const int   x0 = std::max(0, static_cast<int>(std::floor(a_x - reach)));
 		const int   y0 = std::max(0, static_cast<int>(std::floor(a_y - reach)));
 		const int   x1 = std::min(m_w - 1, static_cast<int>(std::ceil(a_x + reach)));
 		const int   y1 = std::min(m_h - 1, static_cast<int>(std::ceil(a_y + reach)));
+		const float fromX = m_hasPrevDab ? m_prevDabX - a_x : 0.0f, fromY = m_hasPrevDab ? m_prevDabY - a_y : 0.0f;
+		m_prevDabX = a_x;
+		m_prevDabY = a_y;
+		m_hasPrevDab = true;
 		if (x0 > x1 || y0 > y1) {
 			return;
 		}
-		auto& layer = m_layers[m_current].px;
-
-		// Wet paint under the brush: what was on this layer before the stroke began (the undo snapshot).
-		// Lower layers count as dry - you paint back to front, letting each layer set.
-		const auto& before = m_undo.empty() ? layer : m_undo.back().px;
-		float       under[3]{}, wet = 0.0f, wsum = 0.0f;
-		for (int k = 0; k < 5; ++k) {
-			const int sx = std::clamp(static_cast<int>(a_x + (k == 1 ? rAcross * 0.5f : k == 2 ? -rAcross * 0.5f : 0.0f)), 0, m_w - 1);
-			const int sy = std::clamp(static_cast<int>(a_y + (k == 3 ? rAcross * 0.5f : k == 4 ? -rAcross * 0.5f : 0.0f)), 0, m_h - 1);
-			const std::size_t i = (static_cast<std::size_t>(sy) * m_w + sx) * 4;
-			const float       a = before[i + 3] / 255.0f;
-			for (int c = 0; c < 3; ++c) {
-				under[c] += before[i + c] * a;
-			}
-			wsum += a;
-			wet += std::sqrt(a);  // even a thin film of wet paint mixes in
-		}
-		wet /= 5.0f;
-		Rgb deposit = a_brush.color;
-		if (wet > 0.15f && wsum > 0.0f) {
-			const Rgb u{ static_cast<std::uint8_t>(under[0] / wsum), static_cast<std::uint8_t>(under[1] / wsum), static_cast<std::uint8_t>(under[2] / wsum) };
-			if ((m_dabs++ & 3) == 0) {
-				// the brush picks up some of the wet paint it drags through
-				a_brush.color = Spectral::Mix(a_brush.color, u, 0.12f * wet);
-			}
-			deposit = Spectral::Mix(a_brush.color, u, 0.6f * wet * (1.0f - 0.3f * p));
-		}
-
-		// The brush never runs out; a light touch still lets only the strongest bristles mark (broken, dry-looking strokes).
-		const float thr = (1.0f - Smooth(0.05f, 0.45f, p)) * 0.35f;
-		const float flow = bt.flow * (0.25f + 0.75f * p);
-		const Tip&  tip = TipFor(a_brush.type);
+		auto&      layer = m_layers[m_current].px;
+		const bool lockAlpha = m_layers[m_current].lockAlpha && !lift;
+		const Tip& tip = TipFor(lift ? 1 : a_brush.type);
 		const float ca = a_dirX, sa = a_dirY;  // stroke direction; u runs across it
-		const float dr = deposit[0], dg = deposit[1], db = deposit[2];
-		for (int y = y0; y <= y1; ++y) {
-			for (int x = x0; x <= x1; ++x) {
-				const float px = x + 0.5f - a_x, py = y + 0.5f - a_y;
-				const float along = px * ca + py * sa;
-				const float across = -px * sa + py * ca;
-				const float u = across / rAcross, v = along / rAlong;
-				if (u * u + v * v >= 1.0f) {
-					continue;
+
+		// the tip's strength at a pixel, with the canvas weave: a light touch only catches the raised threads
+		const float tooth = (1.0f - Smooth(0.1f, 0.8f, p)) * (smear ? 0.3f : 0.7f);
+		auto        tipAt = [&](int x, int y) {
+            const float px = x + 0.5f - a_x, py = y + 0.5f - a_y;
+            const float along = px * ca + py * sa;
+            const float across = -px * sa + py * ca;
+            const float u = across / rAcross, v = along / rAlong;
+            if (u * u + v * v >= 1.0f) {
+                return 0.0f;
+            }
+            float m;
+            if (lift) {  // cloth: soft, uneven
+                const float r = std::sqrt(u * u + v * v);
+                m = (1.0f - Smooth(0.35f, 1.0f, r)) * (0.65f + 0.35f * Rand(static_cast<std::uint32_t>(y * 7919 + x * 31 + m_dabs)));
+            } else {
+                m = SampleTip(tip, u, v);
+            }
+            if (tooth > 0.0f) {
+                const float g = m_grain[static_cast<std::size_t>(y) * m_w + x] / 255.0f;
+                m *= 1.0f - tooth * (1.0f - g);
+            }
+            return m;
+		};
+
+		if (lift) {
+			// ---- the rag: wipes paint off this layer, more with a heavier hand
+			const float strength = 0.25f + 0.5f * p;
+			for (int y = y0; y <= y1; ++y) {
+				for (int x = x0; x <= x1; ++x) {
+					const float m = tipAt(x, y);
+					if (m <= 0.002f) {
+						continue;
+					}
+					const std::size_t i = (static_cast<std::size_t>(y) * m_w + x) * 4;
+					layer[i + 3] = static_cast<std::uint8_t>(layer[i + 3] * (1.0f - std::clamp(m * strength, 0.0f, 1.0f)) + 0.5f);
 				}
-				float m = SampleTip(tip, u, v);
-				if (thr > 0.0f) {
-					m = Smooth(thr, thr + 0.25f, m) * m;
+			}
+			++m_dabs;
+		} else if (smear) {
+			// ---- a clean brush: drags the wet paint along (Krita's smearing). Each pixel takes some of
+			// what was where the brush came from; the paint thins as it is dragged out.
+			const int   w = x1 - x0 + 1, h = y1 - y0 + 1;
+			const float strength = 0.55f + 0.35f * p;
+			std::vector<float> src(static_cast<std::size_t>(w) * h * 4);
+			for (int y = y0; y <= y1; ++y) {
+				for (int x = x0; x <= x1; ++x) {
+					const int         sx = std::clamp(static_cast<int>(std::lround(x + fromX)), 0, m_w - 1);
+					const int         sy = std::clamp(static_cast<int>(std::lround(y + fromY)), 0, m_h - 1);
+					const std::size_t si = (static_cast<std::size_t>(sy) * m_w + sx) * 4;
+					float*            d = &src[(static_cast<std::size_t>(y - y0) * w + (x - x0)) * 4];
+					const float       a = layer[si + 3] / 255.0f;
+					d[0] = layer[si] * a;  // premultiplied, so bare canvas pulls the paint thin
+					d[1] = layer[si + 1] * a;
+					d[2] = layer[si + 2] * a;
+					d[3] = a;
 				}
-				const float a = std::clamp(m * flow, 0.0f, 1.0f);
-				if (a <= 0.002f) {
-					continue;
+			}
+			for (int y = y0; y <= y1; ++y) {
+				for (int x = x0; x <= x1; ++x) {
+					const float k = std::clamp(tipAt(x, y) * strength, 0.0f, 1.0f);
+					if (k <= 0.002f) {
+						continue;
+					}
+					const std::size_t i = (static_cast<std::size_t>(y) * m_w + x) * 4;
+					const float*      sp = &src[(static_cast<std::size_t>(y - y0) * w + (x - x0)) * 4];
+					const float       da = layer[i + 3] / 255.0f;
+					const float       na = lockAlpha ? da : da + (sp[3] - da) * k;
+					if (na <= 0.002f) {
+						layer[i + 3] = 0;
+						continue;
+					}
+					for (int c = 0; c < 3; ++c) {
+						const float pre = layer[i + c] * da + (sp[c] - layer[i + c] * da) * k;
+						layer[i + c] = static_cast<std::uint8_t>(std::clamp(pre / std::max(na, 1e-4f) + 0.5f, 0.0f, 255.0f));
+					}
+					layer[i + 3] = static_cast<std::uint8_t>(std::clamp(na * 255.0f + 0.5f, 0.0f, 255.0f));
 				}
-				const std::size_t i = (static_cast<std::size_t>(y) * m_w + x) * 4;
-				const float       da = layer[i + 3] / 255.0f;
-				const float       oa = a + da * (1.0f - a);
-				const float       k = a / oa;  // share of the new paint in the pixel's colour
-				layer[i] = static_cast<std::uint8_t>(layer[i] + (dr - layer[i]) * k + 0.5f);
-				layer[i + 1] = static_cast<std::uint8_t>(layer[i + 1] + (dg - layer[i + 1]) * k + 0.5f);
-				layer[i + 2] = static_cast<std::uint8_t>(layer[i + 2] + (db - layer[i + 2]) * k + 0.5f);
-				layer[i + 3] = static_cast<std::uint8_t>(std::clamp(oa * 255.0f + 0.5f, 0.0f, 255.0f));
+			}
+		} else {
+			// ---- paint. Wet paint under the brush: what was on this layer before the stroke began (the
+			// undo snapshot). Lower layers count as dry - you paint back to front, letting each layer set.
+			const auto& before = m_undo.empty() ? layer : m_undo.back().px;
+			float       under[3]{}, wet = 0.0f, wsum = 0.0f;
+			for (int k = 0; k < 5; ++k) {
+				const int sx = std::clamp(static_cast<int>(a_x + (k == 1 ? rAcross * 0.5f : k == 2 ? -rAcross * 0.5f : 0.0f)), 0, m_w - 1);
+				const int sy = std::clamp(static_cast<int>(a_y + (k == 3 ? rAcross * 0.5f : k == 4 ? -rAcross * 0.5f : 0.0f)), 0, m_h - 1);
+				const std::size_t i = (static_cast<std::size_t>(sy) * m_w + sx) * 4;
+				const float       a = before[i + 3] / 255.0f;
+				for (int c = 0; c < 3; ++c) {
+					under[c] += before[i + c] * a;
+				}
+				wsum += a;
+				wet += std::sqrt(a);  // even a thin film of wet paint mixes in
+			}
+			wet /= 5.0f;
+			Rgb deposit = a_brush.color;
+			if (wet > 0.15f && wsum > 0.0f) {
+				const Rgb u{ static_cast<std::uint8_t>(under[0] / wsum), static_cast<std::uint8_t>(under[1] / wsum), static_cast<std::uint8_t>(under[2] / wsum) };
+				if ((m_dabs & 3) == 0) {
+					// the brush picks up some of the wet paint it drags through
+					a_brush.color = Spectral::Mix(a_brush.color, u, 0.12f * wet);
+				}
+				deposit = Spectral::Mix(a_brush.color, u, 0.6f * wet * (1.0f - 0.3f * p));
+			}
+			++m_dabs;
+
+			// flow: paint per dab; body: how far one stroke can cover (a glaze never hides what's under it)
+			const float flow = bt.flow * (0.25f + 0.75f * p);
+			const float cap = m_style.body * 255.0f;
+			const float dr = deposit[0], dg = deposit[1], db = deposit[2];
+			for (int y = y0; y <= y1; ++y) {
+				for (int x = x0; x <= x1; ++x) {
+					float a = std::clamp(tipAt(x, y) * flow, 0.0f, 1.0f);
+					if (a <= 0.002f) {
+						continue;
+					}
+					const std::size_t pi = static_cast<std::size_t>(y) * m_w + x;
+					const float       cov = m_cover[pi];
+					const float       room = std::max(0.0f, cap - cov) / 255.0f;
+					a = std::min(a, room);
+					if (a <= 0.002f) {
+						continue;
+					}
+					m_cover[pi] = static_cast<std::uint8_t>(std::min(255.0f, cov + a * 255.0f));
+					const std::size_t i = pi * 4;
+					const float       da = layer[i + 3] / 255.0f;
+					if (lockAlpha && da <= 0.0f) {
+						continue;
+					}
+					const float oa = lockAlpha ? da : a + da * (1.0f - a);
+					const float k = lockAlpha ? a : a / oa;  // share of the new paint in the pixel's colour
+					layer[i] = static_cast<std::uint8_t>(layer[i] + (dr - layer[i]) * k + 0.5f);
+					layer[i + 1] = static_cast<std::uint8_t>(layer[i + 1] + (dg - layer[i + 1]) * k + 0.5f);
+					layer[i + 2] = static_cast<std::uint8_t>(layer[i + 2] + (db - layer[i + 2]) * k + 0.5f);
+					layer[i + 3] = static_cast<std::uint8_t>(std::clamp(oa * 255.0f + 0.5f, 0.0f, 255.0f));
+				}
 			}
 		}
 		m_changed = true;
 		Recomposite({ x0, y0, x1 + 1, y1 + 1 });
+	}
+
+	// ---- the hand on the brush
+	void Stroker::Begin(float a_x, float a_y, double a_time)
+	{
+		m_bx = m_cx = a_x;
+		m_by = m_cy = a_y;
+		m_travel = 0.0f;
+		m_speed = 0.0f;
+		m_pressure = 0.0f;
+		m_time = a_time;
+	}
+
+	void Stroker::Move(float a_x, float a_y, double a_time, float a_pressure, std::vector<StrokePoint>& a_out)
+	{
+		const float dt = static_cast<float>(std::max(1e-3, a_time - m_time));
+		const float cdx = a_x - m_cx, cdy = a_y - m_cy;
+		m_speed = m_speed * 0.8f + std::sqrt(cdx * cdx + cdy * cdy) / dt * 0.2f;
+		m_cx = a_x;
+		m_cy = a_y;
+		m_time = a_time;
+		// the brush is pulled along on the string
+		const float dx = m_cx - m_bx, dy = m_cy - m_by;
+		const float d = std::sqrt(dx * dx + dy * dy);
+		if (d <= string) {
+			return;
+		}
+		const float pull = (d - string) / d;
+		m_bx += dx * pull;
+		m_by += dy * pull;
+		m_travel += d - string;
+		// fade in at the start, lighter when flicked fast; the pressure itself is smoothed a little
+		const float fade = 0.3f + 0.7f * Smooth(0.0f, std::max(4.0f, taper), m_travel);
+		const float speed = 1.0f - 0.35f * Smooth(500.0f, 3000.0f, m_speed);
+		const float target = a_pressure * fade * speed;
+		m_pressure = m_pressure <= 0.0f ? target : m_pressure + (target - m_pressure) * 0.35f;
+		a_out.push_back({ m_bx, m_by, m_pressure });
+	}
+
+	void Stroker::Finish(std::vector<StrokePoint>& a_out)
+	{
+		// lift off: the brush runs out the rest of the string as the pressure comes off
+		const float dx = m_cx - m_bx, dy = m_cy - m_by;
+		const float d = std::sqrt(dx * dx + dy * dy);
+		if (d < 0.5f || m_pressure <= 0.0f) {
+			return;
+		}
+		const int steps = std::clamp(static_cast<int>(d / 2.0f), 2, 24);
+		for (int i = 1; i <= steps; ++i) {
+			const float t = static_cast<float>(i) / steps;
+			a_out.push_back({ m_bx + dx * t, m_by + dy * t, m_pressure * (1.0f - 0.8f * t) });
+		}
+		m_bx = m_cx;
+		m_by = m_cy;
 	}
 
 	void Painting::Rotate(bool a_clockwise, const std::vector<std::uint8_t>& a_newBlank)
@@ -449,6 +635,7 @@ namespace Paint
 		}
 		std::swap(m_w, m_h);
 		m_blank = a_newBlank;
+		MakeGrain();
 		m_undo.clear();
 		m_redo.clear();
 		m_changed = true;

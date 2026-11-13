@@ -77,7 +77,7 @@ namespace Store
 			std::string name = l.name;
 			std::replace(name.begin(), name.end(), '\t', ' ');
 			std::replace(name.begin(), name.end(), '\n', ' ');
-			index += fmt::format("{}\t{}\t{:.3f}\n", name, l.visible ? 1 : 0, l.opacity);
+			index += fmt::format("{}\t{}\t{:.3f}\t{}\t{}\n", name, l.visible ? 1 : 0, l.opacity, l.blend, l.lockAlpha ? 1 : 0);
 		}
 		// layers beyond the new count (a layer was deleted)
 		for (std::size_t i = a_doc.layers.size(); i < Paint::kMaxLayers + 4; ++i) {
@@ -118,6 +118,13 @@ namespace Store
 			}
 			if (t2 != std::string::npos) {
 				l.opacity = std::clamp(static_cast<float>(std::atof(line.c_str() + t2 + 1)), 0.0f, 1.0f);
+				// later columns (older paintings don't have them): blend, lock alpha
+				if (const auto t3 = line.find('\t', t2 + 1); t3 != std::string::npos) {
+					l.blend = std::clamp(std::atoi(line.c_str() + t3 + 1), 0, 1);
+					if (const auto t4 = line.find('\t', t3 + 1); t4 != std::string::npos) {
+						l.lockAlpha = std::atoi(line.c_str() + t4 + 1) != 0;
+					}
+				}
 			}
 			int w = 0, h = 0;
 			if (!ReadPng(a_dir / fmt::format("layer{}.png", i), l.px, w, h)) {

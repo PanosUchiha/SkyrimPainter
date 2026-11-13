@@ -22,9 +22,12 @@
 #include <vector>
 
 // The paint engine: layers composited back to front over the canvas, and brushes that behave like
-// real ones - a bristle tip that leaves streaks, a light touch that only catches the strongest bristles, pressure, and wet
-// paint that mixes (spectrally) with what is already on the canvas. No game or UI code, so it can be
-// tested on its own.
+// real ones. The backbone follows Krita's: bristle tips that leave streaks, pressure that splays them,
+// opacity (how thick the paint is) kept apart from flow (paint per dab), wet paint that mixes
+// (spectrally) with what is under it, a clean brush that smears (the colour smudge engine), a rag that
+// lifts paint (the eraser), the canvas weave catching a light touch (the texture option), and a stroke
+// helper that steadies the hand and tapers the ends (smoothing / stabiliser, fade and speed sensors).
+// No game or UI code, so it can be tested on its own.
 namespace Paint
 {
 	using Rgb = Spectral::Rgb;
@@ -35,7 +38,7 @@ namespace Paint
 		float       radius;     // canvas pixels at full pressure
 		float       aspect;     // tip width across the stroke / along it (flat brushes > 1)
 		float       flow;       // paint laid down per dab
-		float       thirst;     // how fast it runs out of paint
+		float       unused;     // (was: how fast it ran out of paint)
 	};
 	inline constexpr int       kBrushCount = 4;
 	extern const BrushType     kBrushes[kBrushCount];
@@ -45,7 +48,24 @@ namespace Paint
 		int   type = -1;     // -1 = no brush in hand
 		Rgb   color{};       // paint on the brush
 		float load = 0.0f;   // 0 = clean, 1 = paint on it (never runs out; the rag wipes it)
+		int   size = 2;      // which of the kSizes this brush is (a bigger or smaller brush of the same kind)
 		bool  Loaded() const { return type >= 0 && load > 0.5f; }
+	};
+	inline constexpr int   kSizeCount = 5;
+	inline constexpr float kSizes[kSizeCount] = { 0.5f, 0.7f, 1.0f, 1.4f, 2.0f };
+
+	// How a stroke goes down.
+	struct StrokeStyle
+	{
+		float body = 1.0f;   // paint thickness: 0.1 = a thin glaze .. 1 = full body (caps how much one stroke covers)
+		bool  lift = false;  // the rag: takes paint off the current layer instead of putting it on
+	};
+
+	// Layer blending: paint sits on top, or glazes (multiplies) over what is under it.
+	enum class Blend : int
+	{
+		Normal = 0,
+		Glaze = 1,
 	};
 
 	struct Layer
@@ -54,6 +74,8 @@ namespace Paint
 		bool                      visible = true;
 		float                     opacity = 1.0f;
 		std::vector<std::uint8_t> px;  // RGBA, straight alpha
+		Blend                     blend = Blend::Normal;
+		bool                      lockAlpha = false;  // only paint over paint that is already on this layer
 	};
 
 	struct Rect
@@ -84,9 +106,12 @@ namespace Paint
 		void                      SetLayerVisible(int a_i, bool a_on);
 		void                      SetLayerOpacity(int a_i, float a_opacity);
 		void                      ClearLayer(int a_i);
+		void                      SetLayerBlend(int a_i, Blend a_blend);
+		void                      SetLayerLockAlpha(int a_i, bool a_on);
 
 		// ---- painting
-		void BeginStroke(Brush& a_brush, float a_x, float a_y, float a_pressure);
+		// A loaded brush paints, a clean one smears the wet paint, a_style.lift lifts it (no brush needed).
+		void BeginStroke(Brush& a_brush, float a_x, float a_y, float a_pressure, const StrokeStyle& a_style = {});
 		void StrokeTo(Brush& a_brush, float a_x, float a_y, float a_pressure);
 		void EndStroke(Brush& a_brush);
 		bool Stroking() const { return m_stroking; }
@@ -117,11 +142,14 @@ namespace Paint
 		};
 
 		void Dab(Brush& a_brush, float a_x, float a_y, float a_pressure, float a_dirX, float a_dirY);
+		void MakeGrain();
 		void Recomposite(const Rect& a_r);
 		void PushUndo(int a_layer);
 
 		int                       m_w = 0, m_h = 0;
 		std::vector<std::uint8_t> m_blank;
+		std::vector<std::uint8_t> m_grain;  // the canvas weave: 255 = a raised thread, 0 = the hollows between
+		std::vector<std::uint8_t> m_cover;  // how much the current stroke has covered each pixel
 		std::vector<std::uint8_t> m_composite;
 		std::vector<Layer>        m_layers;
 		int                       m_current = 0;
@@ -135,6 +163,36 @@ namespace Paint
 		int   m_dabs = 0;
 		bool  m_moved = false;
 		float m_firstPressure = 1.0f;
+		float m_prevDabX = 0, m_prevDabY = 0;  // where the last dab went (smearing drags from there)
+		bool  m_hasPrevDab = false;
+		StrokeStyle m_style;
+	};
+
+	// The hand on the brush, between the mouse and Painting::StrokeTo. Like Krita's stabiliser: the
+	// brush hangs on a string behind the cursor (steadier lines, the longer the string), and when the
+	// button comes up the brush runs out the rest of the string, lifting off - so strokes taper at
+	// the end as they do at the start. A fast flick lays down less paint (the speed sensor).
+	struct StrokePoint
+	{
+		float x, y, pressure;
+	};
+
+	class Stroker
+	{
+	public:
+		float string = 6.0f;   // canvas px the brush trails the cursor by (set from the "steady hand")
+		float taper = 12.0f;   // canvas px the stroke takes to come up to full pressure
+
+		void Begin(float a_x, float a_y, double a_time);
+		void Move(float a_x, float a_y, double a_time, float a_pressure, std::vector<StrokePoint>& a_out);
+		void Finish(std::vector<StrokePoint>& a_out);  // the button came up: run out the string, tapering
+		float BrushX() const { return m_bx; }
+		float BrushY() const { return m_by; }
+
+	private:
+		float  m_bx = 0, m_by = 0, m_cx = 0, m_cy = 0;
+		float  m_travel = 0, m_speed = 0, m_pressure = 0;
+		double m_time = 0;
 	};
 
 	// Rotates RGBA pixels a quarter turn; a_w / a_h are the source size.

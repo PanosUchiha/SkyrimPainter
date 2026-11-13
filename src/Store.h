@@ -15,7 +15,7 @@
 #pragma once
 
 // A painting on disk: a folder with one PNG per layer (layer0.png is the back), layers.txt
-// (name, visible, opacity per layer) and flat.png (everything together, what the DDS is made from).
+// (name, visible, opacity, blend, lock alpha per layer) and flat.png (everything together, what the DDS is made from).
 // Paintings live in Documents\My Games\Skyrim Special Edition\SkyrimPainter.
 namespace Store
 {
@@ -25,6 +25,8 @@ namespace Store
 		bool                      visible = true;
 		float                     opacity = 1.0f;
 		std::vector<std::uint8_t> px;  // RGBA, straight alpha
+		int                       blend = 0;  // Paint::Blend
+		bool                      lockAlpha = false;
 	};
 
 	struct Doc
