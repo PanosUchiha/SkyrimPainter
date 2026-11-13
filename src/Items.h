@@ -73,8 +73,12 @@ namespace Items
 		bool                  portrait = false;
 		int                   slot = -1;
 		std::string           name;
+		RE::FormID            canvas = 0;  // the canvas reference on the easel (painting on it in the world)
 	};
 	std::optional<Work> TakeStudioRequest();  // any thread
+	// The studio paints on the canvas in the world: the canvas gets a texture of its own for the session
+	// (a_dds, a new name), made from a_flat; the studio then draws straight into it. Any thread.
+	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
 	// After the studio saved the layers to Work::dir (worker thread):
 	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
 	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h);

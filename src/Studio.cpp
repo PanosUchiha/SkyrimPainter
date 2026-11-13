@@ -15,11 +15,13 @@
 #include "Studio.h"
 
 #include "Art.h"
+#include "Live.h"
 #include "Overlay.h"
 #include "Paint.h"
 #include "PaletteSpots.h"
 #include "Spectral.h"
 #include "Store.h"
+#include "Surface.h"
 #include "Theme.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -77,8 +79,13 @@ namespace Studio
 		Paint::Painting           g_paint;
 		Paint::Brush              g_brush;  // in hand
 		Paint::Brush              g_rack[Paint::kBrushCount];  // the brushes put down keep the paint that was on them
-		ImVec2                    g_dir{ 1.0f, 0.0f };         // smoothed stroke direction on the canvas (for the cursor)
-		ImVec2                    g_lastMouse{ -1.0f, -1.0f };
+		ImVec2                    g_dir{ 1.0f, 0.0f };         // smoothed stroke direction, canvas pixels (for the cursor)
+		ImVec2                    g_lastCanvas{ -1e9f, -1e9f };
+		// painting on the canvas in the world (the default) or in the flat close-up
+		bool                      g_closeUp = false;
+		std::string               g_liveDds;          // the canvas's own texture for this session
+		double                    g_openedAt = 0.0;
+		bool                      g_liveWarned = false;
 		bool                      g_overCanvas = false;
 		bool                      g_hideHud = false;  // Tab: only the canvas stays up
 		bool                      g_guide = false;    // the painter's guide is open (F1)
@@ -265,8 +272,13 @@ namespace Studio
 			}).detach();
 		}
 
-		void Close()
+		void Close(bool a_saving = false)
 		{
+			// the canvas in the world keeps showing the paint until the saved picture takes over
+			Live::Detach(a_saving);
+			if (g_open) {
+				Live::RestoreView();
+			}
 			if (g_srv) {
 				g_release.push_back(g_srv);
 				g_srv = nullptr;
@@ -282,10 +294,11 @@ namespace Studio
 
 		void StepAway()
 		{
-			if (g_paint.Changed()) {
+			const bool save = g_paint.Changed();
+			if (save) {
 				SaveAndThen(false, {});
 			}
-			Close();
+			Close(save);
 		}
 
 		// ---- drawing helpers
@@ -428,37 +441,170 @@ namespace Studio
 			}
 		}
 
-		// The brush's footprint as an outline: a circle for the round brushes, an ellipse / flat oval for the
-		// filbert and the flats, turned with the stroke; the rag is a soft round wad.
-		void DrawFootprint(ImDrawList* a_dl, const ImVec2& a_c, float a_scale)
+		ImVec2 ToScreen(const Surface& a_s, float a_x, float a_y)
 		{
+			ImVec2 o;
+			a_s.ToScreen(a_x, a_y, o.x, o.y);
+			return o;
+		}
+		ImVec2 ToCanvas(const Surface& a_s, const ImVec2& a_p)
+		{
+			ImVec2 o;
+			a_s.ToCanvas(a_p.x, a_p.y, o.x, o.y);
+			return o;
+		}
+
+		// The brush's footprint as an outline, laid on the canvas (so in the world it is seen in
+		// perspective): a circle for the round brushes, an ellipse / flat oval for the filbert and the
+		// flats, turned with the stroke; the rag is a soft round wad.
+		void DrawFootprint(ImDrawList* a_dl, const Surface& a_s, const ImVec2& a_c)
+		{
+			float rA, rL;
 			if (g_rag) {
-				const float r = std::max(2.0f, 24.0f * (0.6f + 0.4f * g_pressure) * a_scale);
-				a_dl->AddCircle(a_c, r + 1.0f, IM_COL32(0, 0, 0, 110), 0, 2.2f);
-				a_dl->AddCircle(a_c, r, IM_COL32(225, 214, 190, 200), 0, 1.2f);
+				rA = rL = 24.0f * (0.6f + 0.4f * g_pressure);
+			} else if (g_brush.type >= 0) {
+				const auto& bt = Paint::kBrushes[g_brush.type];
+				rA = bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * (0.45f + 0.55f * g_pressure);  // across the stroke
+				rL = rA / bt.aspect;                                                                                                   // along it
+			} else {
 				return;
 			}
-			if (g_brush.type < 0) {
-				return;
-			}
-			const auto& bt = Paint::kBrushes[g_brush.type];
-			const float sz = Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)];
-			const float rA = std::max(1.5f, bt.radius * sz * (0.45f + 0.55f * g_pressure) * a_scale);  // across the stroke
-			const float rL = std::max(1.0f, rA / bt.aspect);                                            // along it
+			const float minPx = 1.5f / std::max(0.01f, a_s.ScaleAt(a_c.x, a_c.y));
+			rA = std::max(rA, minPx);
+			rL = std::max(rL, minPx);
 			constexpr int kN = 40;
 			ImVec2        pts[kN];
 			for (int i = 0; i < kN; ++i) {
 				const float t = 6.2831853f * i / kN;
 				const float along = std::cos(t) * rL, across = std::sin(t) * rA;
-				pts[i] = a_c + ImVec2(g_dir.x * along - g_dir.y * across, g_dir.y * along + g_dir.x * across);
+				pts[i] = ToScreen(a_s, a_c.x + g_dir.x * along - g_dir.y * across, a_c.y + g_dir.y * along + g_dir.x * across);
 			}
 			a_dl->AddPolyline(pts, kN, IM_COL32(0, 0, 0, 120), ImDrawFlags_Closed, 2.4f);
-			// loaded: the paint's colour; clean (it will blend): a dashed-looking pale outline
-			a_dl->AddPolyline(pts, kN, g_brush.Loaded() ? Col(g_brush.color, 230) : IM_COL32(255, 255, 255, 150), ImDrawFlags_Closed, g_brush.Loaded() ? 1.4f : 1.0f);
+			ImU32 col = IM_COL32(255, 255, 255, 150);  // clean: it will blend
+			if (g_rag) {
+				col = IM_COL32(225, 214, 190, 200);
+			} else if (g_brush.Loaded()) {
+				col = Col(g_brush.color, 230);
+			}
+			a_dl->AddPolyline(pts, kN, col, ImDrawFlags_Closed, 1.3f);
 		}
 
-		// Canvas: the painting on the easel, fitted into a_size and then zoomed / panned / mirrored.
-		// Left button paints (Ctrl: dips the brush into the colour under it), middle button or Space +
+		// Painting on a surface (the canvas in the world, or the close-up). a_canStart: a click here may
+		// start a stroke (the mouse is over this surface and nothing else); a_hovered: show the cursor.
+		void PaintOn(const Surface& a_s, bool a_canStart, bool a_hovered)
+		{
+			const auto&  io = ImGui::GetIO();
+			const float  W = static_cast<float>(g_paint.Width()), H = static_cast<float>(g_paint.Height());
+			const ImVec2 m = ToCanvas(a_s, io.MousePos);
+			const bool   inside = m.x >= 0.0f && m.y >= 0.0f && m.x < W && m.y < H;
+
+			// which way the brush is travelling across the canvas (the flat brushes lie across it)
+			if (g_lastCanvas.x > -1e8f) {
+				const ImVec2 d = m - g_lastCanvas;
+				const float  len = std::sqrt(d.x * d.x + d.y * d.y);
+				if (len > 0.75f) {
+					g_dir = g_dir * 0.75f + d / len * 0.25f;
+					const float l2 = std::sqrt(g_dir.x * g_dir.x + g_dir.y * g_dir.y);
+					g_dir = l2 > 0.01f ? g_dir / l2 : ImVec2(1.0f, 0.0f);
+				}
+			}
+			g_lastCanvas = m;
+
+			const double now = ImGui::GetTime();
+			if (!g_painting && a_canStart && inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+				if (io.KeyCtrl && !g_rag) {
+					// dip the brush into the paint on the canvas (the colour picker)
+					if (g_brush.type < 0) {
+						Hint("Pick up a brush first: click one below the palette");
+					} else {
+						g_brush.color = g_paint.ColorAt(static_cast<int>(m.x), static_cast<int>(m.y));
+						g_brush.load = 1.0f;
+					}
+				} else if (!g_rag && g_brush.type < 0) {
+					Hint("Pick up a brush first: click one below the palette");
+				} else {
+					Paint::StrokeStyle style;
+					style.body = g_body;
+					style.lift = g_rag;
+					const auto& bt = Paint::kBrushes[std::max(0, g_brush.type)];
+					// the string is measured on screen, so it feels the same near or far
+					g_stroker.string = (Theme::S(2.0f) + g_steady * Theme::S(80.0f)) / std::max(0.01f, a_s.ScaleAt(m.x, m.y));
+					g_stroker.taper = g_rag ? 8.0f : bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * 1.5f;
+					g_stroker.Begin(m.x, m.y, now);
+					g_paint.BeginStroke(Held(), m.x, m.y, 0.3f * g_pressure, style);
+					g_painting = true;
+				}
+			}
+			if (g_painting) {
+				g_points.clear();
+				g_stroker.Move(m.x, m.y, now, g_pressure, g_points);
+				const bool up = !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+				if (up) {
+					g_stroker.Finish(g_points);  // lift off: the stroke tapers away
+				}
+				for (const auto& pt : g_points) {
+					g_paint.StrokeTo(Held(), pt.x, pt.y, pt.pressure);
+				}
+				if (up) {
+					g_paint.EndStroke(Held());
+					g_painting = false;
+				}
+			}
+
+			// the cursor: the footprint where the brush is, on a string to the hand
+			g_overCanvas = g_painting || (a_hovered && inside && !Overlay::Looking());
+			if (g_overCanvas) {
+				auto*  fg = ImGui::GetForegroundDrawList();
+				ImVec2 at = m;
+				if (g_painting) {
+					at = ImVec2(g_stroker.BrushX(), g_stroker.BrushY());
+					const ImVec2 bs = ToScreen(a_s, at.x, at.y);
+					const ImVec2 d = io.MousePos - bs;
+					if (d.x * d.x + d.y * d.y > 9.0f) {
+						fg->AddLine(bs, io.MousePos, IM_COL32(230, 220, 200, 110), 1.0f);
+						fg->AddCircleFilled(io.MousePos, 2.0f, IM_COL32(230, 220, 200, 160));
+					}
+				}
+				DrawFootprint(fg, a_s, at);
+			}
+		}
+
+		// The canvas in the world: found on screen from its corners each frame, painted where the mouse is.
+		void DrawWorldCanvas(bool a_looking)
+		{
+			const auto& io = ImGui::GetIO();
+			float       q[4][2];
+			Surface     s;
+			if (g_work.canvas && Live::CanvasOnScreen(g_work.canvas, g_work.portrait, io.DisplaySize.x, io.DisplaySize.y, q)) {
+				s = Surface::FromQuad(q, static_cast<float>(g_paint.Width()), static_cast<float>(g_paint.Height()));
+			}
+			// a window over the whole screen, behind the panels, to catch the mouse over the canvas
+			ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+			ImGui::Begin("##world", nullptr,
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+					ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollWithMouse);
+			ImGui::SetCursorScreenPos(ImVec2(0, 0));
+			ImGui::InvisibleButton("##worldcanvas", io.DisplaySize, ImGuiButtonFlags_MouseButtonLeft);
+			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsWindowHovered();
+			if (s.ok) {
+				if (hovered && io.MouseWheel != 0.0f) {
+					g_pressure = std::clamp(g_pressure + 0.05f * io.MouseWheel, 0.05f, 1.0f);
+				}
+				PaintOn(s, hovered && !a_looking, hovered);
+			} else {
+				if (g_painting) {  // the canvas went out of view mid-stroke
+					g_paint.EndStroke(Held());
+					g_painting = false;
+				}
+				const char*  msg = "Turn to the canvas (hold the right mouse button), or press C for a close-up";
+				const ImVec2 ts = ImGui::CalcTextSize(msg);
+				ImGui::GetWindowDrawList()->AddText(ImVec2((io.DisplaySize.x - ts.x) * 0.5f, io.DisplaySize.y * 0.12f), IM_COL32(240, 228, 200, 220), msg);
+			}
+			ImGui::End();
+		}
+
+		// The flat close-up: fitted into a_size, then zoomed / panned / mirrored. Middle button or Space +
 		// left button pans, Ctrl + wheel zooms, the wheel alone sets the touch.
 		void DrawCanvas(const ImVec2& a_size)
 		{
@@ -468,8 +614,7 @@ namespace Studio
 			const float  fit = std::min(a_size.x / W, a_size.y / H);
 			const float  scale = fit * g_zoom;
 			const ImVec2 size(W * scale, H * scale);
-			const ImVec2 centre = r0 + a_size * 0.5f + g_pan;
-			const ImVec2 origin = centre - size * 0.5f;
+			const ImVec2 origin = r0 + a_size * 0.5f + g_pan - size * 0.5f;
 			auto*        dl = ImGui::GetWindowDrawList();
 			dl->PushClipRect(r0, r1, true);
 			dl->AddRectFilled(origin + ImVec2(Theme::S(5), Theme::S(6)), origin + size + ImVec2(Theme::S(5), Theme::S(6)), IM_COL32(0, 0, 0, 70), 2.0f);
@@ -479,19 +624,10 @@ namespace Studio
 
 			ImGui::SetCursorScreenPos(r0);
 			ImGui::InvisibleButton("##canvas", a_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
-			const bool hovered = ImGui::IsItemHovered();
-			const bool active = ImGui::IsItemActive();
+			const bool  hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+			const bool  active = ImGui::IsItemActive();
 			const auto& io = ImGui::GetIO();
-			auto toCanvas = [&](const ImVec2& a_s) {
-				ImVec2 m = (a_s - origin) / scale;
-				if (g_mirror) {
-					m.x = W - m.x;
-				}
-				return m;
-			};
-			auto toScreen = [&](float a_x, float a_y) { return origin + ImVec2(g_mirror ? W - a_x : a_x, a_y) * scale; };
 
-			// ---- the view
 			const bool panning = active && !g_painting && (ImGui::IsMouseDown(ImGuiMouseButton_Middle) || ImGui::IsKeyDown(ImGuiKey_Space));
 			if (panning) {
 				g_pan = g_pan + io.MouseDelta;
@@ -507,79 +643,8 @@ namespace Studio
 					g_pressure = std::clamp(g_pressure + 0.05f * io.MouseWheel, 0.05f, 1.0f);
 				}
 			}
-
-			// which way the brush is travelling on screen (the flat brushes lie across it)
-			if (g_lastMouse.x >= 0.0f) {
-				const ImVec2 d = io.MousePos - g_lastMouse;
-				const float  len = std::sqrt(d.x * d.x + d.y * d.y);
-				if (len > 1.5f) {
-					g_dir = g_dir * 0.75f + d / len * 0.25f;
-					const float l2 = std::sqrt(g_dir.x * g_dir.x + g_dir.y * g_dir.y);
-					g_dir = l2 > 0.01f ? g_dir / l2 : ImVec2(1.0f, 0.0f);
-				}
-			}
-			g_lastMouse = io.MousePos;
-
-			// ---- painting
-			const double now = ImGui::GetTime();
-			if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
-				const ImVec2 m = toCanvas(io.MousePos);
-				const bool   inside = m.x >= 0.0f && m.y >= 0.0f && m.x < W && m.y < H;
-				if (io.KeyCtrl && !g_rag) {
-					// dip the brush into the paint on the canvas (the colour picker)
-					if (g_brush.type < 0) {
-						Hint("Pick up a brush first: click one below the palette");
-					} else if (inside) {
-						g_brush.color = g_paint.ColorAt(static_cast<int>(m.x), static_cast<int>(m.y));
-						g_brush.load = 1.0f;
-					}
-				} else if (!g_rag && g_brush.type < 0) {
-					Hint("Pick up a brush first: click one below the palette");
-				} else {
-					Paint::StrokeStyle style;
-					style.body = g_body;
-					style.lift = g_rag;
-					const auto& bt = Paint::kBrushes[std::max(0, g_brush.type)];
-					g_stroker.string = (Theme::S(2.0f) + g_steady * Theme::S(80.0f)) / scale;  // the string is measured on screen
-					g_stroker.taper = g_rag ? 8.0f : bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * 1.5f;
-					g_stroker.Begin(m.x, m.y, now);
-					g_paint.BeginStroke(Held(), m.x, m.y, 0.3f * g_pressure, style);
-					g_painting = true;
-				}
-			}
-			if (g_painting) {
-				const ImVec2 m = toCanvas(io.MousePos);
-				g_points.clear();
-				if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-					g_stroker.Move(m.x, m.y, now, g_pressure, g_points);
-				} else {
-					g_stroker.Move(m.x, m.y, now, g_pressure, g_points);
-					g_stroker.Finish(g_points);  // lift off: the stroke tapers away
-				}
-				for (const auto& pt : g_points) {
-					g_paint.StrokeTo(Held(), pt.x, pt.y, pt.pressure);
-				}
-				if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-					g_paint.EndStroke(Held());
-					g_painting = false;
-				}
-			}
-
-			// ---- the cursor: the brush's footprint where the brush is, on a string to the hand
-			g_overCanvas = (hovered || active) && !Overlay::Looking() && !panning;
-			if (g_overCanvas) {
-				auto* fg = ImGui::GetForegroundDrawList();
-				ImVec2 at = io.MousePos;
-				if (g_painting) {
-					at = toScreen(g_stroker.BrushX(), g_stroker.BrushY());
-					const ImVec2 d = io.MousePos - at;
-					if (d.x * d.x + d.y * d.y > 9.0f) {
-						fg->AddLine(at, io.MousePos, IM_COL32(230, 220, 200, 110), 1.0f);
-						fg->AddCircleFilled(io.MousePos, 2.0f, IM_COL32(230, 220, 200, 160));
-					}
-				}
-				DrawFootprint(fg, at, scale);
-			}
+			const Surface s = Surface::FromRect(origin.x, origin.y, scale, W, g_mirror);
+			PaintOn(s, hovered && !ImGui::IsKeyDown(ImGuiKey_Space) && !Overlay::Looking(), hovered && !panning);
 		}
 
 		void DrawHand(float a_w)
@@ -817,7 +882,7 @@ namespace Studio
 						{
 							{ "Pick up a brush", "Click one of the brushes below the palette. Click it again to put it down." },
 							{ "Load it", "Click a paint on the palette. Click a second paint to mix it into what's on the brush." },
-							{ "Paint", "Drag on the canvas with the left mouse button." },
+							{ "Paint", "Drag on the canvas standing on the easel with the left mouse button - the paint goes straight onto it. Press C for a flat close-up instead." },
 							{ "Keep a mix", "With paint on the brush, click a bare spot on the palette to put the mix down there. Ctrl + click a mix to scrape it off." },
 							{ "Clean the brush", "Click the rag." },
 							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later." },
@@ -857,14 +922,15 @@ namespace Studio
 							{ "Only over paint", "You can only paint where the layer already has paint: shading inside a shape without going over its edge." },
 							{ "Scrape this layer", "Takes all the paint off the current layer (Undo brings it back)." },
 						});
-					GuideTab("Seeing", "Paint what's in front of you: the world stays in view around the canvas.",
+					GuideTab("Seeing", "You paint on the canvas on the easel, with the world around it: paint what's in front of you.",
 						{
-							{ "Right mouse (hold)", "Look around: the mouse turns your view instead of moving the cursor." },
-							{ "Tab", "Hide the palette and the tools; only the canvas stays." },
-							{ "Move the canvas", "Drag its top bar. Drag its bottom corner to make it bigger or smaller." },
+							{ "Right mouse (hold)", "Look around: the mouse turns your view instead of moving the cursor. Turn back to the canvas to paint on it." },
+							{ "Tab", "Hide the palette and the tools." },
+							{ "C / Close-up", "A flat close-up of the canvas in a window, for fine detail. Press C again to paint on the easel." },
+							{ "Move the close-up", "Drag its top bar. Drag its bottom corner to make it bigger or smaller." },
 							{ "Ctrl + wheel", "Zoom in and out where the cursor is." },
 							{ "Middle mouse / Space", "Hold and drag to move around a zoomed-in canvas." },
-							{ "M", "See the painting in a mirror. Painters do this to catch mistakes in the drawing." },
+							{ "M", "In the close-up: see the painting in a mirror. Painters do this to catch mistakes in the drawing." },
 							{ "Step back / Ctrl+0", "The whole canvas again, the right way round." },
 							{ "Reset the layout", "Puts the canvas and the panels back where they started." },
 						});
@@ -874,11 +940,12 @@ namespace Studio
 							{ "Right mouse (hold)", "Look around" },
 							{ "Mouse wheel", "Touch (pressure)" },
 							{ "Ctrl + click", "Take the colour from the canvas" },
-							{ "Ctrl + wheel", "Zoom" },
-							{ "Middle / Space + drag", "Move the canvas" },
+							{ "Ctrl + wheel", "Zoom (close-up)" },
+							{ "Middle / Space + drag", "Move the canvas (close-up)" },
 							{ "[  ]", "Brush size" },
 							{ "E", "Take / put down the rag" },
-							{ "M", "Mirror" },
+							{ "C", "Close-up / paint on the easel" },
+							{ "M", "Mirror (close-up)" },
 							{ "Ctrl+Z / Ctrl+Y", "Undo / redo" },
 							{ "Ctrl+0", "Whole canvas" },
 							{ "Tab", "Hide the panels" },
@@ -919,6 +986,7 @@ namespace Studio
 
 	void Flush()
 	{
+		Live::Tick();
 		for (auto* p : g_release) {
 			p->Release();
 		}
@@ -958,7 +1026,20 @@ namespace Studio
 		std::snprintf(g_name, sizeof g_name, "%s", a_work.name.c_str());
 		g_layoutReset = true;  // portrait and landscape lay out differently
 		g_hideHud = false;
-		g_lastMouse = ImVec2(-1.0f, -1.0f);
+		g_lastCanvas = ImVec2(-1e9f, -1e9f);
+		g_closeUp = false;
+		g_openedAt = ImGui::GetTime();
+		g_liveWarned = false;
+		// paint straight onto the canvas on the easel: it gets a texture of its own for this session,
+		// which the studio's picture is then lent to (Live)
+		g_liveDds.clear();
+		if (a_work.canvas) {
+			g_liveDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", Art::ToUtf8(a_work.dir.filename()), Art::NewId());
+			Items::ShowLive(a_work.easel, g_liveDds, g_paint.Composite(), W, H);
+			Live::FaceCanvas(a_work.canvas, a_work.portrait);
+		} else {
+			g_closeUp = true;
+		}
 		g_open = true;
 		return true;
 	}
@@ -975,11 +1056,25 @@ namespace Studio
 		bool         stepAway = false;
 		g_overCanvas = false;
 
+		// the canvas on the easel shows the studio's picture as it is painted
+		if (!g_liveDds.empty()) {
+			Live::Attach(g_work.canvas, g_liveDds, g_tex, g_srv);
+			if (!Live::Attached() && !g_liveWarned && ImGui::GetTime() - g_openedAt > 6.0) {
+				g_liveWarned = true;  // couldn't hook up: the close-up still works
+				spdlog::warn("Studio: could not paint on the canvas in the world - using the close-up");
+				g_closeUp = true;
+				Hint("The canvas in the world couldn't be painted on - painting in the close-up");
+			}
+		}
+		if (!g_closeUp) {
+			DrawWorldCanvas(looking);
+		}
+
 		// No backdrop: the world stays in view so you can paint what's in front of you. The canvas sits on
 		// the left (drag its top bar to move it, the corner to resize), the palette and the tools on the right.
 		const ImGuiCond cond = g_layoutReset ? ImGuiCond_Always : ImGuiCond_Appearing;
 		const float     panelW = Theme::S(400.0f), toolsW = Theme::S(260.0f), margin = Theme::S(18.0f);
-		{
+		if (g_closeUp) {
 			const float aspect = static_cast<float>(g_paint.Width()) / static_cast<float>(g_paint.Height());
 			const float bar = ImGui::GetFrameHeight() + Theme::S(8.0f);
 			float       ch = screen.y * 0.70f, cw = ch * aspect;
@@ -1044,6 +1139,13 @@ namespace Studio
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("Leave the painting on the easel and come back to it later (Esc)");
 				}
+				if (Theme::Button(g_closeUp ? "Paint on the easel" : "Close-up", ImVec2(w, 0))) {
+					g_closeUp = !g_closeUp;
+					g_layoutReset = g_closeUp;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", g_closeUp ? "Paint straight onto the canvas standing on the easel (C)" : "A flat close-up of the canvas, to zoom in on details or see it in a mirror (C)");
+				}
 				if (Theme::Button(g_guide ? "Close the guide" : "Guide", ImVec2(w, 0))) {
 					g_guide = !g_guide;
 				}
@@ -1099,7 +1201,7 @@ namespace Studio
 			if (done) {
 				ImGui::CloseCurrentPopup();
 				SaveAndThen(true, g_name);
-				Close();
+				Close(true);
 			}
 			ImGui::EndPopup();
 		}
@@ -1123,8 +1225,12 @@ namespace Studio
 				if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
 					ToggleRag();
 				}
-				if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+				if (ImGui::IsKeyPressed(ImGuiKey_M, false) && g_closeUp) {
 					g_mirror = !g_mirror;
+				}
+				if (ImGui::IsKeyPressed(ImGuiKey_C, false) && !io.KeyCtrl) {
+					g_closeUp = !g_closeUp;
+					g_layoutReset = g_closeUp;
 				}
 				if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_0, false)) {
 					g_zoom = 1.0f;

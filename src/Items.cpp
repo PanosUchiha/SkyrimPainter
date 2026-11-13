@@ -735,7 +735,7 @@ namespace Items
 				return;
 			}
 			std::lock_guard lk(g_mtx);
-			g_studioRequest = Work{ a_easel, WorkDir(e.workId), e.portrait, e.slot, e.name };
+			g_studioRequest = Work{ a_easel, WorkDir(e.workId), e.portrait, e.slot, e.name, e.canvas };
 		});
 	}
 
@@ -758,6 +758,20 @@ namespace Items
 			// a new name each time: the game keeps textures by name
 			e.wipDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", e.workId, Art::NewId());
 			e.painted = true;
+			const bool portrait = a_h > a_w;
+			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas);
+		});
+	}
+
+	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	{
+		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
+		WithEasel(a_easel, [flat, dds = std::move(a_dds), a_w, a_h](RE::TESObjectREFR*, Easel& e) {
+			if (!e.canvas) {
+				return;
+			}
+			DeleteTextureLater(e.wipDds);
+			e.wipDds = dds;  // unique to this session: nothing else in the game uses it
 			const bool portrait = a_h > a_w;
 			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas);
 		});
