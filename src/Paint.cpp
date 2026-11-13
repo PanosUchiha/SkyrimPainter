@@ -405,10 +405,9 @@ namespace Paint
 			deposit = Spectral::Mix(a_brush.color, u, 0.6f * wet * (1.0f - 0.3f * p));
 		}
 
-		// How much paint the brush still has: a dry brush only marks with its strongest bristles.
-		const float load = a_brush.load;
-		const float thr = (1.0f - std::min(1.0f, load / 0.6f)) * 0.75f;
-		const float flow = bt.flow * (0.25f + 0.75f * p) * (0.35f + 0.65f * Smooth(0.0f, 0.5f, load));
+		// The brush never runs out; a light touch still lets only the strongest bristles mark (broken, dry-looking strokes).
+		const float thr = (1.0f - Smooth(0.05f, 0.45f, p)) * 0.35f;
+		const float flow = bt.flow * (0.25f + 0.75f * p);
 		const Tip&  tip = TipFor(a_brush.type);
 		const float ca = a_dirX, sa = a_dirY;  // stroke direction; u runs across it
 		const float dr = deposit[0], dg = deposit[1], db = deposit[2];
@@ -439,8 +438,6 @@ namespace Paint
 				layer[i + 3] = static_cast<std::uint8_t>(std::clamp(oa * 255.0f + 0.5f, 0.0f, 255.0f));
 			}
 		}
-		// paint used up: more with a bigger brush and a heavier hand
-		a_brush.load = std::max(0.0f, a_brush.load - 0.0002f * bt.thirst * rAcross * (0.4f + 0.6f * p));
 		m_changed = true;
 		Recomposite({ x0, y0, x1 + 1, y1 + 1 });
 	}

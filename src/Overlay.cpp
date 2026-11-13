@@ -77,6 +77,8 @@ namespace Overlay
 
 		std::atomic<bool> g_open{ false };
 		std::atomic<bool> g_wantOpen{ false };
+		std::atomic<bool> g_studioActive{ false };  // the studio is the open screen (set on the render thread)
+		std::atomic<bool> g_look{ false };          // right mouse held in the studio: the mouse turns the camera
 		bool              g_imguiReady = false;
 		bool              g_imguiFailed = false;
 		bool              g_placementControls = false;
@@ -117,6 +119,8 @@ namespace Overlay
 			g_wantOpen = a_open;
 			if (!a_open) {
 				g_screen = Screen::None;
+				g_studioActive = false;
+				g_look = false;
 				Menus::Release();
 			} else {
 				g_centerMouse = true;
@@ -264,7 +268,7 @@ namespace Overlay
 			};
 			for (auto* e = *a_event; e; e = e->next) {
 				if (e->GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove) {
-					if (g_open) {
+					if (g_open && !g_look) {
 						auto* mm = static_cast<RE::MouseMoveEvent*>(e);
 						PushInput({ InputMsg::Kind::MouseMove, static_cast<float>(mm->mouseInputX), static_cast<float>(mm->mouseInputY) });
 					}
@@ -360,6 +364,11 @@ namespace Overlay
 					}
 				} else if (e->GetDevice() == RE::INPUT_DEVICE::kMouse) {
 					using MouseKey = RE::BSWin32MouseDevice::Key;
+					if (code == 1 && g_studioActive) {
+						// in the studio the right button is "look": held, the mouse turns the camera instead of the cursor
+						g_look = down;
+						continue;
+					}
 					if (code == MouseKey::kWheelUp || code == MouseKey::kWheelDown) {
 						if (down) {
 							InputMsg m{ InputMsg::Kind::Wheel };
@@ -456,8 +465,11 @@ namespace Overlay
 				// releases still go on, so nothing stays held after the window closes
 				static RE::InputEvent*       kept[1];
 				std::vector<RE::InputEvent*> releases;
+				const bool look = g_look && g_studioActive;  // looking around in the studio: the camera gets the mouse
 				for (auto* e = *a_events; e; e = e->next) {
 					if (auto* b = e->AsButtonEvent(); b && b->IsUp()) {
+						releases.push_back(e);
+					} else if (look && (e->GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove || e->GetEventType() == RE::INPUT_EVENT_TYPE::kThumbstick)) {
 						releases.push_back(e);
 					}
 				}
@@ -658,6 +670,11 @@ namespace Overlay
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
 
+	bool Looking()
+	{
+		return g_look && g_studioActive;
+	}
+
 	void PrepareInputBlocker()
 	{
 		if (dbg.inputSink && dbg.blockInput) {
@@ -762,6 +779,13 @@ namespace Overlay
 			g_input.clear();
 		} else {
 			DrainInput();
+		}
+		g_studioActive = g_open && g_screen == Screen::Studio;
+		if (!g_studioActive) {
+			g_look = false;
+		}
+		if (g_open) {
+			io.MouseDrawCursor = !g_look;
 		}
 
 		ImGui_ImplDX11_NewFrame();

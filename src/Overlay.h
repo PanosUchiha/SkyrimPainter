@@ -41,6 +41,9 @@ namespace Overlay
 	// Called from inside the game's IDXGISwapChain::Present, on the render thread.
 	void OnPresent(IDXGISwapChain* a_swapChain);
 
+	// Studio: true while the right mouse button is held - the mouse turns the camera instead of the cursor.
+	bool Looking();
+
 	// render thread helpers for the screens
 	ID3D11Device*             Device();
 	ID3D11DeviceContext*      Context();

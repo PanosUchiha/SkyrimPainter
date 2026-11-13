@@ -269,19 +269,49 @@ def easel_and_canvas(obj, texdir):
             return (rr / Ht + 0.5, 0.5 - uu / Wd) if portrait else (rr / Wd + 0.5, 0.5 - uu / Ht)
         return uv
 
+    # The easel's top clamp holds a landscape canvas's top edge. A portrait canvas is taller: it sits a
+    # few mm forward (covering the easel's own clamp) and brings a clamp of its own at its top edge.
+    key = lambda a: tuple(np.round(V[a], 3))
+    parent = {}
+
+    def root(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for f in middle:
+        for a, _, _ in f[1:]:
+            ra, rb = root(key(f[0][0])), root(key(a))
+            if ra != rb:
+                parent[ra] = rb
+    lowest = {}
+    for f in middle:
+        k = root(key(f[0][0]))
+        lowest[k] = min(lowest.get(k, 1e9), min(V[a][1] for a, _, _ in f))
+    clamp = [f for f in middle if lowest[root(key(f[0][0]))] > 139.0]
+    print(f"top clamp: {len(clamp)} faces")
+    forward = 0.4  # cm
+
     def on_easel(portrait):
         lift = (Wd - Ht) / 2 if portrait else 0.0  # the bottom edge stays on the easel's ledge
+        fwd = forward if portrait else 0.0
 
         def place(p):
             rr, uu, dd = coords(p)
             rr, uu = turn(rr, uu, portrait)
-            return local(c + r * rr + u * (uu + lift) + n * dd)
+            return local(c + r * rr + u * (uu + lift) + n * (dd + fwd))
+
 
         def drot(d):
             d = np.asarray(d)
             rr, uu = turn(float(d @ r), float(d @ u), portrait)
             return rot(r * rr + u * uu + n * float(d @ n))
 
+        if portrait:
+            raise_by = u * (Wd - Ht) + n * forward
+            top = make_mesh("SPCanvasClamp", TEX + "easel.dds", V, VT, VN, clamp, lambda p: local(np.asarray(p) + raise_by), rot)
+            return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
+                    make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait)), top]
         return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
                 make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait))]
 

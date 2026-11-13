@@ -22,7 +22,7 @@
 #include <vector>
 
 // The paint engine: layers composited back to front over the canvas, and brushes that behave like
-// real ones - a bristle tip that leaves streaks, paint that runs out (dry brush), pressure, and wet
+// real ones - a bristle tip that leaves streaks, a light touch that only catches the strongest bristles, pressure, and wet
 // paint that mixes (spectrally) with what is already on the canvas. No game or UI code, so it can be
 // tested on its own.
 namespace Paint
@@ -44,8 +44,8 @@ namespace Paint
 	{
 		int   type = -1;     // -1 = no brush in hand
 		Rgb   color{};       // paint on the brush
-		float load = 0.0f;   // 0 = dry .. 1 = freshly loaded
-		bool  Loaded() const { return type >= 0 && load > 0.02f; }
+		float load = 0.0f;   // 0 = clean, 1 = paint on it (never runs out; the rag wipes it)
+		bool  Loaded() const { return type >= 0 && load > 0.5f; }
 	};
 
 	struct Layer
