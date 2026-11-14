@@ -215,6 +215,81 @@ namespace Studio
 		}
 
 		// ---- the palette's paint spots (pigments + what the player mixed, kept in the INI)
+		// ---- the mixer: the brush's colour is colour 1 blended with colour 2 (Spectral, like real paint)
+		bool             g_mixHasA = false, g_mixHasB = false;
+		Rgb              g_mixA{}, g_mixB{};
+		float            g_mixT = 0.5f;     // how much of colour 2
+		bool             g_pickSecond = false;  // the next paint clicked goes in as colour 2
+		std::vector<Rgb> g_recent;          // colours painted with, newest first
+		constexpr int    kRecent = 10;
+
+		void SaveRecent()
+		{
+			std::string out;
+			for (const auto& c : g_recent) {
+				out += fmt::format("{}{:02X}{:02X}{:02X}", out.empty() ? "" : ";", c[0], c[1], c[2]);
+			}
+			::WritePrivateProfileStringA("Palette", "sRecent", out.c_str(), Overlay::IniPath().c_str());
+		}
+
+		void RememberColour(const Rgb& a_c)
+		{
+			if (!g_recent.empty() && g_recent.front() == a_c) {
+				return;
+			}
+			g_recent.erase(std::remove(g_recent.begin(), g_recent.end(), a_c), g_recent.end());
+			g_recent.insert(g_recent.begin(), a_c);
+			if (static_cast<int>(g_recent.size()) > kRecent) {
+				g_recent.resize(kRecent);
+			}
+			SaveRecent();
+		}
+
+		// the brush takes a colour, pure
+		void LoadColour(const Rgb& a_c)
+		{
+			g_brush.color = a_c;
+			g_brush.load = 1.0f;
+			g_mixA = a_c;
+			g_mixHasA = true;
+			g_mixHasB = false;
+			g_pickSecond = false;
+		}
+
+		void ApplyMix()
+		{
+			if (g_mixHasA && g_mixHasB) {
+				g_brush.color = Spectral::Mix(g_mixA, g_mixB, g_mixT);
+				g_brush.load = 1.0f;
+			}
+		}
+
+		// a second colour mixed into the brush's
+		void MixIn(const Rgb& a_c)
+		{
+			g_pickSecond = false;
+			if (!g_brush.Loaded() || !g_mixHasA) {
+				LoadColour(a_c);
+				return;
+			}
+			if (g_mixHasB) {  // mixing a third: what's on the brush now becomes colour 1
+				g_mixA = g_brush.color;
+			}
+			g_mixB = a_c;
+			g_mixHasB = true;
+			g_mixT = 0.5f;
+			ApplyMix();
+		}
+
+		// the mixer follows the brush in hand
+		void MixerFromBrush()
+		{
+			g_mixHasA = g_brush.Loaded();
+			g_mixA = g_brush.color;
+			g_mixHasB = false;
+			g_pickSecond = false;
+		}
+
 		void LoadSpots()
 		{
 			if (g_spotsLoaded) {
@@ -225,6 +300,17 @@ namespace Studio
 				g_spots.push_back({ PaletteSpots::kSpots[i][0], PaletteSpots::kSpots[i][1], kPigments[i].rgb, false });
 			}
 			char buf[2048]{};
+			::GetPrivateProfileStringA("Palette", "sRecent", "", buf, sizeof buf, Overlay::IniPath().c_str());
+			{
+				std::stringstream rs(buf);
+				for (std::string item; std::getline(rs, item, ';') && static_cast<int>(g_recent.size()) < kRecent;) {
+					unsigned rgb = 0;
+					if (std::sscanf(item.c_str(), "%6x", &rgb) == 1) {
+						g_recent.push_back({ static_cast<std::uint8_t>(rgb >> 16), static_cast<std::uint8_t>(rgb >> 8), static_cast<std::uint8_t>(rgb) });
+					}
+				}
+			}
+			buf[0] = 0;
 			::GetPrivateProfileStringA("Palette", "sMixed", "", buf, sizeof buf, Overlay::IniPath().c_str());
 			std::stringstream ss(buf);
 			for (std::string item; std::getline(ss, item, ';');) {
@@ -436,8 +522,7 @@ namespace Studio
 					if (g_brush.type < 0) {
 						Hint("Pick up a brush first: click one below the palette");
 					} else {
-						g_brush.color = g_paint.ColorAt(static_cast<int>(m.x), static_cast<int>(m.y));
-						g_brush.load = 1.0f;
+						LoadColour(g_paint.ColorAt(static_cast<int>(m.x), static_cast<int>(m.y)));
 					}
 				} else if (!g_rag && g_brush.type < 0) {
 					Hint("Pick up a brush first: click one below the palette");
@@ -456,6 +541,9 @@ namespace Studio
 					// the string is measured on screen, so it feels the same near or far
 					g_stroker.string = 0.0f;  // the brush is exactly where the mouse is
 					g_stroker.taper = g_rag ? 8.0f : bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * 1.5f;
+					if (!g_rag && g_brush.Loaded()) {
+						RememberColour(g_brush.color);
+					}
 					g_stroker.Begin(m.x, m.y, now);
 					g_paint.BeginStroke(Held(), m.x, m.y, 0.3f * g_pressure, style);
 					g_painting = true;
@@ -615,7 +703,12 @@ namespace Studio
 			if (hoverSpot >= 0) {
 				const auto& s = g_spots[hoverSpot];
 				dl->AddCircle(p0 + ImVec2(s.x * a_w, s.y * ph), blobR + 3.0f, Theme::Gold(), 0, U(2.0f));
-				ImGui::SetTooltip("%s", s.mixed ? "Your mix (Ctrl + click to scrape it off)" : kPigments[std::min(hoverSpot, PaletteSpots::kCount - 1)].name);
+				const char* name = s.mixed ? "Your mix" : kPigments[std::min(hoverSpot, PaletteSpots::kCount - 1)].name;
+				if (g_pickSecond) {
+					ImGui::SetTooltip("%s\nClick: mix it into your brush", name);
+				} else {
+					ImGui::SetTooltip("%s\nClick: load the brush with it\nShift + click: mix it into the brush%s", name, s.mixed ? "\nCtrl + click: scrape it off" : "");
+				}
 			}
 			if (click && overPalette) {
 				if (hoverSpot >= 0 && io.KeyCtrl && g_spots[hoverSpot].mixed) {
@@ -626,13 +719,10 @@ namespace Studio
 					Hint("Put the rag down and pick up a brush to load paint");
 				} else if (g_brush.type < 0) {
 						Hint("Pick up a brush first: click one below the palette");
-					} else if (g_brush.Loaded() && g_brush.color != g_spots[hoverSpot].c) {
-						g_brush.color = Spectral::Mix(g_brush.color, g_spots[hoverSpot].c, 0.5);  // mixes on the brush like real paint
-						g_brush.load = 1.0f;
-						Hint("Mixed into the paint on the brush - click the bare palette to put the mix down, the rag to wipe it");
+					} else if (g_pickSecond || io.KeyShift) {
+						MixIn(g_spots[hoverSpot].c);  // mixes on the brush like real paint; the mixer sets how much
 					} else {
-						g_brush.color = g_spots[hoverSpot].c;
-						g_brush.load = 1.0f;
+						LoadColour(g_spots[hoverSpot].c);
 					}
 				} else if (g_brush.Loaded()) {
 					const float x = (io.MousePos.x - p0.x) / a_w, y = (io.MousePos.y - p0.y) / ph;
@@ -641,6 +731,125 @@ namespace Studio
 					} else {
 						g_spots.push_back({ x, y, g_brush.color, true });
 						SaveSpots();
+						Hint("Mix put down on the palette");
+					}
+				}
+			}
+
+			// ---- the mixer: colour 1 ... every blend ... colour 2; click or drag along it to choose the mix
+			{
+				ImGui::Dummy(ImVec2(0, U(4)));
+				const float  sw = U(24.0f), gap = U(6.0f), h = U(24.0f);
+				const ImVec2 m0 = ImGui::GetCursorScreenPos();
+				ImGui::Dummy(ImVec2(a_w, h));
+				const ImVec2 aMin = m0, aMax = m0 + ImVec2(sw, h);
+				const ImVec2 bMin = m0 + ImVec2(a_w - sw, 0), bMax = m0 + ImVec2(a_w, h);
+				const ImVec2 gMin = m0 + ImVec2(sw + gap, 0), gMax = m0 + ImVec2(a_w - sw - gap, h);
+				const float  gw = gMax.x - gMin.x;
+				const ImU32  edge = IM_COL32(20, 16, 12, 200);
+				// colour 1
+				if (g_mixHasA) {
+					dl->AddRectFilled(aMin, aMax, Col(g_mixA), U(4));
+				}
+				dl->AddRect(aMin, aMax, edge, U(4), 0, 1.0f);
+				// colour 2, or the "+" well
+				if (g_mixHasB) {
+					dl->AddRectFilled(bMin, bMax, Col(g_mixB), U(4));
+				} else {
+					const ImVec2 c = (bMin + bMax) * 0.5f;
+					const float  r = sw * 0.25f;
+					const ImU32  pc = g_pickSecond ? Theme::Gold() : Theme::InkSoft();
+					dl->AddLine(c - ImVec2(r, 0), c + ImVec2(r, 0), pc, 2.0f);
+					dl->AddLine(c - ImVec2(0, r), c + ImVec2(0, r), pc, 2.0f);
+				}
+				dl->AddRect(bMin, bMax, g_pickSecond ? Theme::Gold() : edge, U(4), 0, g_pickSecond ? 2.0f : 1.0f);
+				// the blends between them
+				if (g_mixHasA && g_mixHasB) {
+					static Rgb   cacheA{}, cacheB{};
+					static Rgb   steps[24];
+					static bool  cached = false;
+					if (!cached || cacheA != g_mixA || cacheB != g_mixB) {
+						for (int i = 0; i < 24; ++i) {
+							steps[i] = Spectral::Mix(g_mixA, g_mixB, i / 23.0);
+						}
+						cacheA = g_mixA;
+						cacheB = g_mixB;
+						cached = true;
+					}
+					for (int i = 0; i < 24; ++i) {
+						dl->AddRectFilled(ImVec2(gMin.x + gw * i / 24.0f, gMin.y), ImVec2(gMin.x + gw * (i + 1) / 24.0f + 0.5f, gMax.y), Col(steps[i]));
+					}
+					const float mx = gMin.x + gw * g_mixT;
+					dl->AddTriangleFilled(ImVec2(mx, gMin.y - U(1)), ImVec2(mx - U(5), gMin.y - U(7)), ImVec2(mx + U(5), gMin.y - U(7)), Theme::Gold());
+					dl->AddLine(ImVec2(mx, gMin.y), ImVec2(mx, gMax.y), IM_COL32(255, 255, 255, 220), 2.0f);
+				} else {
+					const char* t = g_mixHasA ? (g_pickSecond ? "click a paint to mix in" : "Shift + click a paint to mix") : "click a paint to load the brush";
+					const ImVec2 ts = ImGui::CalcTextSize(t);
+					dl->AddText(ImVec2(gMin.x + (gw - ts.x) * 0.5f, gMin.y + (h - ts.y) * 0.5f), Theme::Muted(), t);
+				}
+				dl->AddRect(gMin, gMax, edge, 0.0f, 0, 1.0f);
+
+				// clicks
+				static bool dragging = false;
+				const bool  onGrad = ImGui::IsMouseHoveringRect(gMin, gMax) && g_mixHasA && g_mixHasB;
+				if (onGrad && click) {
+					dragging = true;
+				}
+				if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+					dragging = false;
+				}
+				if (dragging) {
+					g_mixT = std::clamp((io.MousePos.x - gMin.x) / gw, 0.0f, 1.0f);
+					ApplyMix();
+				}
+				if (onGrad) {
+					ImGui::SetTooltip("%.0f%% / %.0f%% - click or drag to change the mix", (1.0f - g_mixT) * 100.0f, g_mixT * 100.0f);
+				}
+				if (ImGui::IsMouseHoveringRect(bMin, bMax)) {
+					ImGui::SetTooltip("%s", g_mixHasB ? "Colour 2 - click to take it out of the mix" : "Click, then click a paint to mix it into the brush");
+					if (click) {
+						if (g_mixHasB) {
+							g_mixHasB = false;
+							if (g_mixHasA) {
+								g_brush.color = g_mixA;
+							}
+						} else if (g_brush.type < 0) {
+							Hint("Pick up a brush first: click one below the palette");
+						} else {
+							g_pickSecond = !g_pickSecond;
+						}
+					}
+				}
+				if (g_mixHasA && ImGui::IsMouseHoveringRect(aMin, aMax)) {
+					ImGui::SetTooltip("Colour 1 - click to load the brush with just this colour");
+					if (click) {
+						LoadColour(g_mixA);
+					}
+				}
+
+				// recent colours: the last ones painted with
+				if (!g_recent.empty()) {
+					ImGui::Dummy(ImVec2(0, U(2)));
+					const float  rs = std::min(U(20.0f), (a_w - U(4.0f) * (kRecent - 1)) / kRecent);
+					const ImVec2 r0 = ImGui::GetCursorScreenPos();
+					ImGui::Dummy(ImVec2(a_w, rs));
+					for (int i = 0; i < static_cast<int>(g_recent.size()); ++i) {
+						const ImVec2 q0 = r0 + ImVec2((rs + U(4.0f)) * i, 0), q1 = q0 + ImVec2(rs, rs);
+						dl->AddRectFilled(q0, q1, Col(g_recent[i]), U(3));
+						const bool hov = ImGui::IsMouseHoveringRect(q0, q1);
+						dl->AddRect(q0, q1, hov ? Theme::Gold() : edge, U(3), 0, hov ? 2.0f : 1.0f);
+						if (hov) {
+							ImGui::SetTooltip("A colour you painted with\nClick: load the brush with it\nShift + click: mix it in");
+							if (click) {
+								if (g_brush.type < 0) {
+									Hint("Pick up a brush first: click one below the palette");
+								} else if (g_pickSecond || io.KeyShift) {
+									MixIn(g_recent[i]);
+								} else {
+									LoadColour(g_recent[i]);
+								}
+							}
+						}
 					}
 				}
 			}
@@ -682,6 +891,7 @@ namespace Studio
 								Hint("Click a paint to load the brush");
 							}
 						}
+						MixerFromBrush();
 					}
 				}
 			}
@@ -701,6 +911,7 @@ namespace Studio
 					if (g_brush.type >= 0) {
 						g_brush.load = 0.0f;
 						g_brush.color = {};
+						MixerFromBrush();
 					} else {
 						ToggleRag();
 					}
@@ -797,7 +1008,9 @@ namespace Studio
 					GuideTab("Starting", "Paint the way a painter does: from the back to the front. Block in the big shapes first, then paint the middle and finish with the details on top.",
 						{
 							{ "Pick up a brush", "Click one of the brushes below the palette. Click it again to put it down." },
-							{ "Load it", "Click a paint on the palette. Click a second paint to mix it into what's on the brush." },
+							{ "Load it", "Click a paint on the palette: the brush takes that colour." },
+							{ "Mix", "Shift + click a second paint (or click the + under the palette, then the paint). The strip under the palette shows every blend between your two colours, mixed like real pigments: click or drag along it to pick yours." },
+							{ "Your colours", "Every colour you paint with appears in the row under the mixer. Click one to load it again; Shift + click to mix it in." },
 							{ "Paint", "Drag on the canvas standing on the easel with the left mouse button - the paint goes straight onto it. Press C for a flat close-up instead." },
 							{ "Keep a mix", "With paint on the brush, click a bare spot on the palette to put the mix down there. Ctrl + click a mix to scrape it off." },
 							{ "Clean the brush", "Click the rag." },
@@ -953,6 +1166,7 @@ namespace Studio
 		g_lastCanvas = ImVec2(-1e9f, -1e9f);
 		g_closeUp = false;
 		g_worldZoom = false;
+		MixerFromBrush();
 		g_openedAt = ImGui::GetTime();
 		g_liveWarned = false;
 		// paint straight onto the canvas on the easel: it gets a texture of its own for this session,
