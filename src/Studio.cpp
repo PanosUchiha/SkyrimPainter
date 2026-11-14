@@ -1209,6 +1209,7 @@ namespace Studio
 							{ "Clean the brush", "Click the rag." },
 							{ "Thick paint", "Full-bodied paint and a heavy touch leave ridges of paint on the canvas that catch the light, bristle marks and all. Thin paint stays flat. The rag and a clean brush flatten it again." },
 							{ "Varnish", "When you finish, choose Matte, Satin or Gloss: how much the finished painting shines in the light." },
+							{ "Selling", "General goods merchants and innkeepers buy finished paintings. The price comes from the work in it: how much of the canvas is painted, the detail and the range of colours - a bare sketch fetches a few coins, a full, rich painting a few hundred. Varnish adds a little." },
 							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later. Your work is also saved every few minutes while you paint." },
 						});
 					GuideTab("Brushes", "Each brush leaves its own mark. The outline on the canvas shows where it will touch and how big it is.",

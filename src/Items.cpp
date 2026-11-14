@@ -48,7 +48,68 @@ namespace Items
 			std::string   name;
 			bool          portrait = false;
 			std::uint32_t version = 0;
+			std::int32_t  value = 0;     // what a merchant pays for it, from the work in it (0 = not appraised yet)
+			bool          sold = false;  // sold to a merchant: the slot comes free once the merchant's stock resets
+			float         soldDay = 0.0f;
 		};
+
+		constexpr float kSoldSlotFreeAfterDays = 3.0f;  // merchants restock every 2 days; the sold painting is gone by then
+
+		// What a painting is worth: how much of the canvas is painted, how much is going on in it and how many
+		// colours it uses. A bare canvas is worth a few coins, a busy, colourful, finished painting a few hundred.
+		std::int32_t Appraise(const std::vector<std::uint8_t>& a_flat, int a_w, int a_h, int a_varnish)
+		{
+			if (a_w <= 0 || a_h <= 0 || a_flat.size() < static_cast<std::size_t>(a_w) * a_h * 4) {
+				return 10;
+			}
+			const int step = (std::max)(1, (std::max)(a_w, a_h) / 256);
+			auto      px = [&](int x, int y) { return &a_flat[(static_cast<std::size_t>(y) * a_w + x) * 4]; };
+			auto      lum = [](const std::uint8_t* p) { return 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2]; };
+			std::array<int, 40> bins{};
+			double              grad = 0.0;
+			int                 samples = 0, covered = 0;
+			for (int y = 0; y + step < a_h; y += step) {
+				for (int x = 0; x + step < a_w; x += step) {
+					const auto* p = px(x, y);
+					++samples;
+					// the bare primed canvas is about (248, 247, 244)
+					if (std::abs(p[0] - 248) + std::abs(p[1] - 247) + std::abs(p[2] - 244) < 24) {
+						continue;
+					}
+					++covered;
+					grad += std::fabs(lum(p) - lum(px(x + step, y))) + std::fabs(lum(p) - lum(px(x, y + step)));
+					const int mx = (std::max)({ p[0], p[1], p[2] }), mn = (std::min)({ p[0], p[1], p[2] });
+					if (mx - mn < 24) {
+						++bins[36 + (std::min)(3, mx / 64)];  // greys: four shades
+					} else {
+						float h = 0.0f;
+						if (mx == p[0]) {
+							h = std::fmod(static_cast<float>(p[1] - p[2]) / (mx - mn) + 6.0f, 6.0f);
+						} else if (mx == p[1]) {
+							h = static_cast<float>(p[2] - p[0]) / (mx - mn) + 2.0f;
+						} else {
+							h = static_cast<float>(p[0] - p[1]) / (mx - mn) + 4.0f;
+						}
+						++bins[(std::min)(11, static_cast<int>(h * 2.0f)) * 3 + (std::min)(2, mx / 86)];  // 12 hues x 3 values
+					}
+				}
+			}
+			if (samples == 0 || covered == 0) {
+				return 10;
+			}
+			const float cover = static_cast<float>(covered) / samples;
+			const float detail = std::clamp(static_cast<float>(grad / covered) / 30.0f, 0.0f, 1.0f);
+			int         used = 0;
+			for (int b : bins) {
+				used += b * 300 >= covered ? 1 : 0;  // at least a third of a percent of the paint
+			}
+			const float variety = std::clamp(used / 16.0f, 0.0f, 1.0f);
+			float       value = 10.0f + cover * (30.0f + 170.0f * detail + 110.0f * variety);
+			if (a_varnish > 0) {
+				value *= 1.1f;  // a varnished painting is a finished painting
+			}
+			return static_cast<std::int32_t>(std::lround(value));
+		}
 
 		struct Easel
 		{
@@ -115,12 +176,15 @@ namespace Items
 			if (a_slot < 0 || a_slot >= Forms::kPaintingSlots || !g_books[a_slot]) {
 				return;
 			}
-			std::string name;
+			std::string  name;
+			std::int32_t value = 0;
 			{
 				std::lock_guard lk(g_mtx);
 				name = g_slots[a_slot].used ? g_slots[a_slot].name : std::string("Painting");
+				value = g_slots[a_slot].used ? g_slots[a_slot].value : 0;
 			}
 			g_books[a_slot]->fullName = name.c_str();
+			g_books[a_slot]->value = value > 0 ? value : 50;
 		}
 
 		fs::path WorkDir(const std::string& a_id) { return Store::WorkFolder() / Art::FromUtf8(a_id); }
@@ -266,9 +330,40 @@ namespace Items
 		// ---- events
 		class EventSink final :
 			public RE::BSTEventSink<RE::MenuOpenCloseEvent>,
-			public RE::BSTEventSink<RE::TESActivateEvent>
+			public RE::BSTEventSink<RE::TESActivateEvent>,
+			public RE::BSTEventSink<RE::TESContainerChangedEvent>
 		{
 		public:
+			// Selling a painting: it leaves the player while the barter menu is open. Buying it back undoes that.
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* a_event, RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
+			{
+				constexpr RE::FormID kPlayer = 0x14;
+				if (!a_event || (a_event->oldContainer != kPlayer && a_event->newContainer != kPlayer)) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				const int slot = SlotOfBook(RE::TESForm::LookupByID(a_event->baseObj));
+				if (slot < 0) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				auto*       ui = RE::UI::GetSingleton();
+				const bool  barter = ui && ui->IsMenuOpen(RE::BarterMenu::MENU_NAME);
+				auto*       cal = RE::Calendar::GetSingleton();
+				const float today = cal ? cal->GetDaysPassed() : 0.0f;
+				std::lock_guard lk(g_mtx);
+				auto&           s = g_slots[slot];
+				if (!s.used) {
+					return RE::BSEventNotifyControl::kContinue;
+				}
+				if (a_event->oldContainer == kPlayer && barter) {
+					s.sold = true;
+					s.soldDay = today;
+					spdlog::info("Sold \"{}\" (slot {}) for about {} gold", s.name, slot + 1, s.value);
+				} else if (a_event->newContainer == kPlayer && s.sold) {
+					s.sold = false;  // bought back
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
 			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
 			{
 				if (!a_event || !a_event->opening) {
@@ -347,7 +442,7 @@ namespace Items
 		{
 			{
 				std::lock_guard lk(g_mtx);
-				if (a_intfc->OpenRecord(kRecordSlots, 1)) {
+				if (a_intfc->OpenRecord(kRecordSlots, 2)) {
 					a_intfc->WriteRecordData(static_cast<std::uint32_t>(g_slots.size()));
 					for (const auto& s : g_slots) {
 						a_intfc->WriteRecordData(static_cast<std::uint8_t>(s.used));
@@ -355,6 +450,9 @@ namespace Items
 						WriteString(a_intfc, s.name);
 						a_intfc->WriteRecordData(static_cast<std::uint8_t>(s.portrait));
 						a_intfc->WriteRecordData(s.version);
+						a_intfc->WriteRecordData(s.value);
+						a_intfc->WriteRecordData(static_cast<std::uint8_t>(s.sold));
+						a_intfc->WriteRecordData(s.soldDay);
 					}
 				}
 				if (a_intfc->OpenRecord(kRecordEasels, 1)) {
@@ -378,7 +476,7 @@ namespace Items
 		{
 			std::uint32_t type = 0, version = 0, length = 0;
 			while (a_intfc->GetNextRecordInfo(type, version, length)) {
-				if (type == kRecordSlots && version == 1) {
+				if (type == kRecordSlots && (version == 1 || version == 2)) {
 					std::uint32_t n = 0;
 					a_intfc->ReadRecordData(n);
 					std::lock_guard lk(g_mtx);
@@ -388,6 +486,14 @@ namespace Items
 						if (a_intfc->ReadRecordData(used) != 1 || !ReadString(a_intfc, s.id) || !ReadString(a_intfc, s.name) ||
 							a_intfc->ReadRecordData(portrait) != 1 || a_intfc->ReadRecordData(s.version) != sizeof(s.version)) {
 							break;
+						}
+						if (version >= 2) {
+							std::uint8_t sold = 0;
+							if (a_intfc->ReadRecordData(s.value) != sizeof(s.value) || a_intfc->ReadRecordData(sold) != 1 ||
+								a_intfc->ReadRecordData(s.soldDay) != sizeof(s.soldDay)) {
+								break;
+							}
+							s.sold = sold != 0;
 						}
 						s.used = used != 0;
 						s.portrait = portrait != 0;
@@ -487,19 +593,67 @@ namespace Items
 			}
 		}
 
+		// General goods merchants buy anything; the food keyword lets innkeepers (and food sellers) buy paintings too.
+		RE::BGSKeyword* food = nullptr;
+		for (auto* kw : dh->GetFormArray<RE::BGSKeyword>()) {
+			if (kw && _stricmp(kw->GetFormEditorID(), "VendorItemFood") == 0) {
+				food = kw;
+				break;
+			}
+		}
+		if (food) {
+			for (auto* book : g_books) {
+				if (book) {
+					book->AddKeyword(food);
+				}
+			}
+		} else {
+			spdlog::warn("VendorItemFood keyword not found - only general goods merchants will buy paintings");
+		}
+
 		if (auto* ui = RE::UI::GetSingleton()) {
 			ui->AddEventSink<RE::MenuOpenCloseEvent>(&g_sink);
 		}
 		if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
 			events->AddEventSink<RE::TESActivateEvent>(&g_sink);
+			events->AddEventSink<RE::TESContainerChangedEvent>(&g_sink);
 		}
 		return ok;
 	}
 
 	void OnGameLoaded()
 	{
+		std::vector<std::pair<int, std::string>> unpriced;  // paintings from before selling existed
+		{
+			std::lock_guard lk(g_mtx);
+			for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+				if (g_slots[i].used && g_slots[i].value <= 0) {
+					unpriced.emplace_back(i, g_slots[i].id);
+				}
+			}
+		}
 		for (int i = 0; i < Forms::kPaintingSlots; ++i) {
 			NameBook(i);
+		}
+		if (!unpriced.empty()) {
+			std::thread([unpriced] {
+				for (const auto& [slot, id] : unpriced) {
+					std::vector<std::uint8_t> flat;
+					int                       w = 0, h = 0;
+					const auto                dir = SlotDir(id);
+					const std::int32_t        value = Store::LoadFlat(dir, flat, w, h) ? Appraise(flat, w, h, Store::LoadVarnish(dir)) : 50;
+					SKSE::GetTaskInterface()->AddTask([slot, id, value] {
+						{
+							std::lock_guard lk(g_mtx);
+							if (!g_slots[slot].used || g_slots[slot].id != id) {
+								return;
+							}
+							g_slots[slot].value = value;
+						}
+						NameBook(slot);
+					});
+				}
+			}).detach();
 		}
 		std::vector<Easel> easels;
 		{
@@ -841,8 +995,25 @@ namespace Items
 						}
 					}
 				}
+				if (slot < 0) {  // a painting sold days ago is gone from the merchant's stock: its slot can be reused
+					auto*       cal = RE::Calendar::GetSingleton();
+					const float today = cal ? cal->GetDaysPassed() : 0.0f;
+					auto*       player = RE::PlayerCharacter::GetSingleton();
+					for (int i = 0; i < Forms::kPaintingSlots; ++i) {
+						const auto& o = g_slots[i];
+						if (o.used && o.sold && today - o.soldDay >= kSoldSlotFreeAfterDays && !Place::SlotHung(i) &&
+							!(player && g_books[i] && player->GetItemCount(g_books[i]) > 0)) {
+							spdlog::info("Slot {} (\"{}\", sold) is reused", i + 1, o.name);
+							DeleteTextureLater(SlotDds(o));
+							std::thread([dir = SlotDir(o.id)] { Store::RemoveDoc(dir); }).detach();
+							g_slots[i] = Slot{};
+							slot = i;
+							break;
+						}
+					}
+				}
 				if (slot < 0) {
-					Art::Notify("You have 50 paintings already - scrape one off at an easel to finish another");
+					Art::Notify("You have 50 paintings already - sell one or scrape one off at an easel to finish another");
 					return;
 				}
 				s = g_slots[slot];
@@ -853,6 +1024,7 @@ namespace Items
 				}
 				s.name = name.empty() ? std::string("Untitled") : name;
 				s.portrait = a_h > a_w;
+				s.sold = false;
 				++s.version;
 				g_slots[slot] = s;     // reserved now
 				it->second = Easel{};  // the easel stands empty again
@@ -873,7 +1045,15 @@ namespace Items
 					}
 				}
 				Art::ConvertNow(flat->data(), a_w, a_h, dds, a_w, a_h);
-				SKSE::GetTaskInterface()->AddTask([slot, s] {
+				const std::int32_t value = Appraise(*flat, a_w, a_h, Store::LoadVarnish(dest));
+				SKSE::GetTaskInterface()->AddTask([slot, s, value] {
+					{
+						std::lock_guard lk(g_mtx);
+						if (g_slots[slot].used && g_slots[slot].id == s.id) {
+							g_slots[slot].value = value;
+						}
+					}
+					NameBook(slot);
 					GivePaintingItem(slot);
 					Place::RefreshSlot(slot);
 					spdlog::info("Finished \"{}\" (slot {}, {})", s.name, slot + 1, SlotDds(s));
