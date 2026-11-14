@@ -94,7 +94,7 @@ namespace Studio
 		float                     g_ui = 0.85f;          // HUD size ([Studio] fHudSize)
 		// the hand (Krita: pressure, opacity, smoothing) and the view (zoom, pan, mirror)
 		float                     g_body = 1.0f;    // paint thickness: thin glaze .. full body
-		float                     g_steady = 0.25f; // how long the string the brush hangs on is
+		float                     g_steady = 0.0f;  // smoothing: 0 = the brush is exactly where the mouse is
 		bool                      g_rag = false;    // the rag is in hand (lifts paint off the canvas)
 		Paint::Brush              g_ragHand;        // stands in for a brush while the rag is used
 		Paint::Stroker            g_stroker;
@@ -545,7 +545,7 @@ namespace Studio
 					style.lift = g_rag;
 					const auto& bt = Paint::kBrushes[std::max(0, g_brush.type)];
 					// the string is measured on screen, so it feels the same near or far
-					g_stroker.string = (Theme::S(2.0f) + g_steady * Theme::S(80.0f)) / std::max(0.01f, a_s.ScaleAt(m.x, m.y));
+					g_stroker.string = g_steady * Theme::S(60.0f) / std::max(0.01f, a_s.ScaleAt(m.x, m.y));
 					g_stroker.taper = g_rag ? 8.0f : bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * 1.5f;
 					g_stroker.Begin(m.x, m.y, now);
 					g_paint.BeginStroke(Held(), m.x, m.y, 0.3f * g_pressure, style);
@@ -568,21 +568,10 @@ namespace Studio
 				}
 			}
 
-			// the cursor: the footprint where the brush is, on a string to the hand
+			// the cursor: the brush's footprint, right at the mouse
 			g_overCanvas = g_painting || (a_hovered && inside && !Overlay::Looking());
 			if (g_overCanvas) {
-				auto*  fg = ImGui::GetForegroundDrawList();
-				ImVec2 at = m;
-				if (g_painting) {
-					at = ImVec2(g_stroker.BrushX(), g_stroker.BrushY());
-					const ImVec2 bs = ToScreen(a_s, at.x, at.y);
-					const ImVec2 d = io.MousePos - bs;
-					if (d.x * d.x + d.y * d.y > 9.0f) {
-						fg->AddLine(bs, io.MousePos, IM_COL32(230, 220, 200, 110), 1.0f);
-						fg->AddCircleFilled(io.MousePos, 2.0f, IM_COL32(230, 220, 200, 160));
-					}
-				}
-				DrawFootprint(fg, a_s, at);
+				DrawFootprint(ImGui::GetForegroundDrawList(), a_s, m);
 			}
 		}
 
@@ -687,7 +676,7 @@ namespace Studio
 			row("Paint", "##body", &g_body, 10.0f, 100.0f, "%.0f%%",
 				"How thick the paint is. Thin: a glaze you can see through, however much you go over it in one stroke. Full: covers what's under it.");
 			row("Steady", "##steady", &g_steady, 0.0f, 100.0f, "%.0f%%",
-				"A steadier hand: the brush trails the cursor on a string, smoothing the line. When you let go it follows through and lifts off.");
+				"Smooths shaky lines: the higher it is, the more the brush trails behind the mouse. 0 = the paint goes exactly where the mouse is.");
 		}
 
 		void DrawPalettePanel(float a_w)
@@ -923,7 +912,7 @@ namespace Studio
 						{
 							{ "Touch", "How hard you press. Light: thin, broken strokes that only catch the weave of the canvas. Heavy: the bristles splay and lay the paint down thick. The mouse wheel over the canvas changes it too." },
 							{ "Paint", "How thick the paint is. Thin is a glaze you can see through, however much you go over it in one stroke. Full covers what's under it." },
-							{ "Steady", "A steadier hand. While you paint the brush trails the cursor on a string and smooths the line; when you let go it follows through and lifts off." },
+							{ "Steady", "Smooths shaky lines. Off (0) by default: the paint goes exactly where the mouse is. Turned up, the brush trails a little behind the mouse to even out the line." },
 							{ "Strokes", "Every stroke starts light and comes up to full pressure, and thins out as the brush lifts. A quick flick lays down less paint." },
 						});
 					GuideTab("Blending", "Wet paint on the layer you're painting mixes the way pigments do: blue and yellow make green.",
