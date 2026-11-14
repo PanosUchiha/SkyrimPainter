@@ -94,7 +94,6 @@ namespace Studio
 		float                     g_ui = 0.85f;          // HUD size ([Studio] fHudSize)
 		// the hand (Krita: pressure, opacity, smoothing) and the view (zoom, pan, mirror)
 		float                     g_body = 1.0f;    // paint thickness: thin glaze .. full body
-		float                     g_steady = 0.0f;  // smoothing: 0 = the brush is exactly where the mouse is
 		bool                      g_rag = false;    // the rag is in hand (lifts paint off the canvas)
 		Paint::Brush              g_ragHand;        // stands in for a brush while the rag is used
 		Paint::Stroker            g_stroker;
@@ -545,7 +544,7 @@ namespace Studio
 					style.lift = g_rag;
 					const auto& bt = Paint::kBrushes[std::max(0, g_brush.type)];
 					// the string is measured on screen, so it feels the same near or far
-					g_stroker.string = g_steady * Theme::S(60.0f) / std::max(0.01f, a_s.ScaleAt(m.x, m.y));
+					g_stroker.string = 0.0f;  // the brush is exactly where the mouse is
 					g_stroker.taper = g_rag ? 8.0f : bt.radius * Paint::kSizes[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)] * 1.5f;
 					g_stroker.Begin(m.x, m.y, now);
 					g_paint.BeginStroke(Held(), m.x, m.y, 0.3f * g_pressure, style);
@@ -675,8 +674,6 @@ namespace Studio
 				"Light: thin, broken strokes that only catch the canvas weave. Heavy: the bristles splay and lay the paint down thick.\nThe mouse wheel over the canvas changes it too.");
 			row("Paint", "##body", &g_body, 10.0f, 100.0f, "%.0f%%",
 				"How thick the paint is. Thin: a glaze you can see through, however much you go over it in one stroke. Full: covers what's under it.");
-			row("Steady", "##steady", &g_steady, 0.0f, 100.0f, "%.0f%%",
-				"Smooths shaky lines: the higher it is, the more the brush trails behind the mouse. 0 = the paint goes exactly where the mouse is.");
 		}
 
 		void DrawPalettePanel(float a_w)
@@ -908,12 +905,11 @@ namespace Studio
 							{ "Never runs out", "A loaded brush keeps its paint until you wipe it on the rag. Each brush keeps its own paint when you put it down." },
 							{ "Dirty brush", "Dragging through wet paint picks some of it up, so colours shift as you work, like the real thing." },
 						});
-					GuideTab("Your hand", "The three sliders under the palette.",
+					GuideTab("Your hand", "The two sliders under the palette.",
 						{
 							{ "Touch", "How hard you press. Light: thin, broken strokes that only catch the weave of the canvas. Heavy: the bristles splay and lay the paint down thick. The mouse wheel over the canvas changes it too." },
 							{ "Paint", "How thick the paint is. Thin is a glaze you can see through, however much you go over it in one stroke. Full covers what's under it." },
-							{ "Steady", "Smooths shaky lines. Off (0) by default: the paint goes exactly where the mouse is. Turned up, the brush trails a little behind the mouse to even out the line." },
-							{ "Strokes", "Every stroke starts light and comes up to full pressure, and thins out as the brush lifts. A quick flick lays down less paint." },
+							{ "Strokes", "Every stroke starts light and comes up to full pressure. A quick flick lays down less paint." },
 						});
 					GuideTab("Blending", "Wet paint on the layer you're painting mixes the way pigments do: blue and yellow make green.",
 						{
