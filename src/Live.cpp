@@ -41,6 +41,7 @@ namespace Live
 		std::chrono::steady_clock::time_point g_detachBy;
 		bool                                  g_wasThirdPerson = false;
 		bool                                  g_viewChanged = false;
+		float                                 g_fovBefore = 0.0f;  // > 0: zoomed in, this was the field of view
 
 		RE::TESObjectREFR* Canvas(std::uint32_t a_id)
 		{
@@ -240,8 +241,29 @@ namespace Live
 		});
 	}
 
+	void SetZoom(bool a_on)
+	{
+		SKSE::GetTaskInterface()->AddTask([a_on] {
+			auto* cam = RE::PlayerCamera::GetSingleton();
+			if (!cam) {
+				return;
+			}
+			auto& fov = cam->GetRuntimeData2().worldFOV;
+			if (a_on && g_fovBefore <= 0.0f) {
+				// 25% closer: everything in view looks 1.25 times bigger
+				g_fovBefore = fov;
+				const float half = std::clamp(fov, 10.0f, 150.0f) * 0.5f * 0.0174532925f;
+				fov = 2.0f * std::atan(std::tan(half) / 1.25f) * 57.2957795f;
+			} else if (!a_on && g_fovBefore > 0.0f) {
+				fov = g_fovBefore;
+				g_fovBefore = 0.0f;
+			}
+		});
+	}
+
 	void RestoreView()
 	{
+		SetZoom(false);
 		SKSE::GetTaskInterface()->AddTask([] {
 			if (!g_viewChanged) {
 				return;

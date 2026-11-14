@@ -39,5 +39,7 @@ namespace Live
 
 	// Main thread work, queued: first person, turned to face the canvas; and back again.
 	void FaceCanvas(std::uint32_t a_canvas, bool a_portrait);
-	void RestoreView();
+	void RestoreView();  // (also takes off the zoom)
+	// Look 25% closer (a narrower field of view), or back. Main thread work, queued.
+	void SetZoom(bool a_on);
 }
