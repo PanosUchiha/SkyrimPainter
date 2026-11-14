@@ -338,26 +338,6 @@ namespace Studio
 		}
 
 		// ---- panels
-		void DrawTools(float a_w)
-		{
-			Theme::SectionLabel("History");
-			const float hw = (a_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-			ImGui::BeginDisabled(!g_paint.CanUndo());
-			if (Theme::Button("Undo", ImVec2(hw, 0))) {
-				g_paint.Undo();
-			}
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			ImGui::BeginDisabled(!g_paint.CanRedo());
-			if (Theme::Button("Redo", ImVec2(hw, 0))) {
-				g_paint.Redo();
-			}
-			ImGui::EndDisabled();
-			if (Theme::Button("Scrape the canvas", ImVec2(a_w, 0))) {
-				g_openClear = true;
-			}
-		}
-
 		Paint::Brush& Held() { return g_rag ? g_ragHand : g_brush; }
 
 		void PutDownBrush()
@@ -754,9 +734,7 @@ namespace Studio
 			ImGui::Dummy(ImVec2(0, U(6)));
 			DrawHand(a_w);
 			ImGui::Dummy(ImVec2(0, U(4)));
-			Theme::TextColoredWrapped(Theme::InkSoft(),
-				"Click a brush to pick it up, a paint to load it (a second paint mixes in), the bare palette to put a mix down, the rag "
-				"to wipe the brush. A clean brush blends the wet paint. Ctrl + click on the canvas takes up the colour there. F1: the guide.");
+			Theme::TextColoredWrapped(Theme::InkSoft(), "F1: how everything works");
 		}
 
 		// ---- the painter's guide: everything the studio can do, in the studio
@@ -850,14 +828,14 @@ namespace Studio
 					GuideTab("Seeing", "You paint on the canvas on the easel, with the world around it: paint what's in front of you.",
 						{
 							{ "Right mouse (hold)", "Look around: the mouse turns your view instead of moving the cursor. Turn back to the canvas to paint on it." },
-							{ "Tab", "Hide the palette and the tools." },
+							{ "Tab", "Hide the panel." },
 							{ "C / Close-up", "A flat close-up of the canvas in a window, for fine detail. Press C again to paint on the easel." },
 							{ "Move the close-up", "Drag its top bar. Drag its bottom corner to make it bigger or smaller." },
 							{ "Ctrl + wheel", "Zoom in and out where the cursor is." },
 							{ "Middle mouse / Space", "Hold and drag to move around a zoomed-in canvas." },
 							{ "M", "In the close-up: see the painting in a mirror. Painters do this to catch mistakes in the drawing." },
 							{ "Step back / Ctrl+0", "The whole canvas again, the right way round." },
-							{ "Reset the layout", "Puts the canvas and the panels back where they started." },
+							{ "Reset", "Puts the panel and the close-up back where they started." },
 						});
 					GuideTab("Keys", "",
 						{
@@ -1023,14 +1001,14 @@ namespace Studio
 
 		// No backdrop: the world stays in view so you can paint what's in front of you. The canvas sits on
 		// the left (drag its top bar to move it, the corner to resize), the palette and the tools on the right.
-		// panels keep wherever you put them; they are put in their places on opening and by "Reset the layout"
+		// panels keep wherever you put them; it is put in its place on opening and by Reset
 		const ImGuiCond cond = g_placeFrames > 0 ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
-		const float     panelW = U(330.0f), toolsW = U(220.0f), margin = Theme::S(14.0f);
+		const float     panelW = U(330.0f), margin = Theme::S(14.0f);
 		if (g_closeUp) {
 			const float aspect = static_cast<float>(g_paint.Width()) / static_cast<float>(g_paint.Height());
 			const float bar = ImGui::GetFrameHeight() + Theme::S(8.0f);
 			float       ch = screen.y * 0.70f, cw = ch * aspect;
-			const float maxW = screen.x - panelW - toolsW - margin * 4.0f;
+			const float maxW = screen.x - panelW - margin * 3.0f;
 			if (cw > maxW) {
 				cw = maxW;
 				ch = cw / aspect;
@@ -1075,47 +1053,69 @@ namespace Studio
 			if (looking) {
 				ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.25f);
 			}
-			// palette, brushes, rag, your hand: right edge, bottom
-			ImGui::SetNextWindowPos(ImVec2(screen.x - margin, screen.y - margin), cond, ImVec2(1.0f, 1.0f));
+			// one panel on the right edge: the palette, brushes and rag, your hand, then the history, finishing and the view
+			ImGui::SetNextWindowPos(ImVec2(screen.x - margin, screen.y * 0.5f), cond, ImVec2(1.0f, 0.5f));
 			ImGui::SetNextWindowSize(ImVec2(panelW, 0.0f), ImGuiCond_Always);
-			if (Theme::BeginWindow("##palettewin", nullptr, faded)) {
-				ImGui::SetWindowFontScale(g_ui);
-				DrawPalettePanel(ImGui::GetContentRegionAvail().x);
-			}
-			Theme::EndWindow();
-
-			// layers, history, step away / finish: right edge, top
-			ImGui::SetNextWindowPos(ImVec2(screen.x - margin, margin), cond, ImVec2(1.0f, 0.0f));
-			ImGui::SetNextWindowSize(ImVec2(toolsW, 0.0f), ImGuiCond_Always);
-			if (Theme::BeginWindow("##toolswin", nullptr, faded)) {
+			if (Theme::BeginWindow("##studiopanel", nullptr, faded)) {
 				ImGui::SetWindowFontScale(g_ui);
 				const float w = ImGui::GetContentRegionAvail().x;
-				DrawTools(w);
-				ImGui::Dummy(ImVec2(0, U(6)));
-				if (Theme::Button("Finish painting", ImVec2(w, 0), true)) {
+				const float sp = ImGui::GetStyle().ItemSpacing.x;
+				const float w2 = (w - sp) * 0.5f, w3 = (w - sp * 2.0f) / 3.0f;
+				DrawPalettePanel(w);
+
+				ImGui::Dummy(ImVec2(0, U(4)));
+				ImGui::Separator();
+				ImGui::Dummy(ImVec2(0, U(2)));
+				ImGui::BeginDisabled(!g_paint.CanUndo());
+				if (Theme::Button("Undo", ImVec2(w3, 0))) {
+					g_paint.Undo();
+				}
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!g_paint.CanRedo());
+				if (Theme::Button("Redo", ImVec2(w3, 0))) {
+					g_paint.Redo();
+				}
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				if (Theme::Button("Scrape", ImVec2(w3, 0))) {
+					g_openClear = true;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("Scrape all the paint off the canvas");
+				}
+
+				if (Theme::Button("Finish painting", ImVec2(w2, 0), true)) {
 					g_openFinish = true;
 				}
-				if (Theme::Button("Step away", ImVec2(w, 0))) {
+				ImGui::SameLine();
+				if (Theme::Button("Step away", ImVec2(w2, 0))) {
 					stepAway = true;
 				}
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("Leave the painting on the easel and come back to it later (Esc)");
 				}
-				if (Theme::Button(g_closeUp ? "Paint on the easel" : "Close-up", ImVec2(w, 0))) {
+
+				if (Theme::Button(g_closeUp ? "Easel" : "Close-up", ImVec2(w3, 0))) {
 					g_closeUp = !g_closeUp;
 				}
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("%s", g_closeUp ? "Paint straight onto the canvas standing on the easel (C)" : "A flat close-up of the canvas, to zoom in on details or see it in a mirror (C)");
 				}
-				if (Theme::Button(g_guide ? "Close the guide" : "Guide", ImVec2(w, 0))) {
+				ImGui::SameLine();
+				if (Theme::Button(g_guide ? "Close guide" : "Guide", ImVec2(w3, 0))) {
 					g_guide = !g_guide;
 				}
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("How everything works (F1)");
 				}
-				if (Theme::Button("Reset the layout", ImVec2(w, 0))) {
+				ImGui::SameLine();
+				if (Theme::Button("Reset", ImVec2(w3, 0))) {
 					g_placeFrames = 3;
 					g_canvasPlace = true;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("Put the panel (and the close-up) back in place");
 				}
 				ImGui::AlignTextToFramePadding();
 				ImGui::TextUnformatted("HUD size");
@@ -1127,7 +1127,7 @@ namespace Studio
 				}
 				if (ImGui::IsItemDeactivatedAfterEdit()) {
 					::WritePrivateProfileStringA("Studio", "fHudSize", fmt::format("{:.2f}", g_ui).c_str(), Overlay::IniPath().c_str());
-					g_placeFrames = 3;  // the panels change size: put them back against the edges
+					g_placeFrames = 3;  // the panel changes size: put it back against the edge
 				}
 			}
 			Theme::EndWindow();
