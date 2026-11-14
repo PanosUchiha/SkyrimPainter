@@ -152,6 +152,42 @@ namespace Paint
 		}
 	}
 
+	bool Painting::Flatten()
+	{
+		if (m_layers.empty()) {
+			return false;
+		}
+		if (m_layers.size() == 1 && m_layers[0].visible && m_layers[0].opacity >= 0.999f && m_layers[0].blend == Blend::Normal && !m_layers[0].lockAlpha) {
+			return false;
+		}
+		const std::size_t         n = static_cast<std::size_t>(m_w) * m_h;
+		std::vector<std::uint8_t> out(n * 4, 0);
+		for (const auto& l : m_layers) {
+			const float op = std::clamp(l.opacity, 0.0f, 1.0f);
+			for (std::size_t i = 0; i < n; ++i) {
+				const float a = l.px[i * 4 + 3] / 255.0f * op;
+				if (a <= 0.0f) {
+					continue;
+				}
+				const float da = out[i * 4 + 3] / 255.0f;
+				const float oa = a + da * (1.0f - a);
+				for (int c = 0; c < 3; ++c) {
+					const float v = (l.px[i * 4 + c] * a + out[i * 4 + c] * da * (1.0f - a)) / oa;
+					out[i * 4 + c] = static_cast<std::uint8_t>(std::clamp(v + 0.5f, 0.0f, 255.0f));
+				}
+				out[i * 4 + 3] = static_cast<std::uint8_t>(std::clamp(oa * 255.0f + 0.5f, 0.0f, 255.0f));
+			}
+		}
+		m_layers.clear();
+		m_layers.push_back({ "Paint", true, 1.0f, std::move(out) });
+		m_current = 0;
+		m_undo.clear();
+		m_redo.clear();
+		m_changed = true;
+		RecompositeAll();
+		return true;
+	}
+
 	void Painting::SetLayerBlend(int a_i, Blend a_blend)
 	{
 		if (a_i >= 0 && a_i < static_cast<int>(m_layers.size()) && m_layers[a_i].blend != a_blend) {

@@ -106,6 +106,9 @@ namespace Paint
 		void                      SetLayerVisible(int a_i, bool a_on);
 		void                      SetLayerOpacity(int a_i, float a_opacity);
 		void                      ClearLayer(int a_i);
+		// One layer of paint: everything merged into it, bottom to top (hidden layers too, so nothing
+		// painted is lost). True if there was anything to merge.
+		bool                      Flatten();
 		void                      SetLayerBlend(int a_i, Blend a_blend);
 		void                      SetLayerLockAlpha(int a_i, bool a_on);
 

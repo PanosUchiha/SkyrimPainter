@@ -338,79 +338,8 @@ namespace Studio
 		}
 
 		// ---- panels
-		void DrawLayers(float a_w)
-		{
-			Theme::SectionLabel("Layers (front at the top)");
-			auto&     layers = g_paint.Layers();
-			const int n = static_cast<int>(layers.size());
-			for (int i = n - 1; i >= 0; --i) {
-				ImGui::PushID(i);
-				bool vis = layers[i].visible;
-				if (ImGui::Checkbox("##vis", &vis)) {
-					g_paint.SetLayerVisible(i, vis);
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Show / hide this layer (a hidden layer shows nothing you paint on it)");
-				}
-				ImGui::SameLine();
-				const std::string label = layers[i].visible ? layers[i].name : layers[i].name + "  (hidden)";
-				if (!layers[i].visible) {
-					ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-				}
-				if (ImGui::Selectable(label.c_str(), g_paint.Current() == i, 0, ImVec2(a_w - ImGui::GetFrameHeight() - U(8), 0))) {
-					g_paint.SetCurrent(i);
-				}
-				if (!layers[i].visible) {
-					ImGui::PopStyleColor();
-				}
-				ImGui::PopID();
-			}
-			const float bw = (a_w - ImGui::GetStyle().ItemSpacing.x * 3) / 4.0f;
-			ImGui::BeginDisabled(n >= Paint::kMaxLayers);
-			if (Theme::Button("New", ImVec2(bw, 0))) {
-				g_paint.AddLayer(fmt::format("Layer {}", n + 1));
-			}
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			ImGui::BeginDisabled(n <= 1);
-			if (Theme::Button("Del", ImVec2(bw, 0))) {
-				g_paint.DeleteLayer(g_paint.Current());
-			}
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			if (Theme::Button("Up", ImVec2(bw, 0))) {
-				g_paint.MoveLayer(g_paint.Current(), +1);
-			}
-			ImGui::SameLine();
-			if (Theme::Button("Down", ImVec2(bw, 0))) {
-				g_paint.MoveLayer(g_paint.Current(), -1);
-			}
-			const int cur = g_paint.Current();
-			float     op = layers[cur].opacity * 100.0f;
-			if (Theme::SliderFloat("Layer opacity", &op, 0.0f, 100.0f, "%.0f%%", a_w)) {
-				g_paint.SetLayerOpacity(cur, op / 100.0f);
-			}
-			bool glaze = layers[cur].blend == Paint::Blend::Glaze;
-			if (ImGui::Checkbox("Glaze", &glaze)) {
-				g_paint.SetLayerBlend(cur, glaze ? Paint::Blend::Glaze : Paint::Blend::Normal);
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("A transparent coat: it tints and deepens what is under it instead of covering it");
-			}
-			ImGui::SameLine();
-			bool lock = layers[cur].lockAlpha;
-			if (ImGui::Checkbox("Only over paint", &lock)) {
-				g_paint.SetLayerLockAlpha(cur, lock);
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Paint only where this layer already has paint - for shading inside a shape without going over its edge");
-			}
-		}
-
 		void DrawTools(float a_w)
 		{
-			DrawLayers(a_w);
-			ImGui::Dummy(ImVec2(0, U(8)));
 			Theme::SectionLabel("History");
 			const float hw = (a_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 			ImGui::BeginDisabled(!g_paint.CanUndo());
@@ -424,7 +353,7 @@ namespace Studio
 				g_paint.Redo();
 			}
 			ImGui::EndDisabled();
-			if (Theme::Button("Scrape this layer", ImVec2(a_w, 0))) {
+			if (Theme::Button("Scrape the canvas", ImVec2(a_w, 0))) {
 				g_openClear = true;
 			}
 		}
@@ -886,7 +815,7 @@ namespace Studio
 				ImGui::Separator();
 				ImGui::BeginChild("##guidebody", ImVec2(0, 0), false);
 				if (ImGui::BeginTabBar("##guidetabs")) {
-					GuideTab("Starting", "Paint the way a painter does: from the back to the front. Block in the big shapes on the underpainting, then add layers for the middle and the details.",
+					GuideTab("Starting", "Paint the way a painter does: from the back to the front. Block in the big shapes first, then paint the middle and finish with the details on top.",
 						{
 							{ "Pick up a brush", "Click one of the brushes below the palette. Click it again to put it down." },
 							{ "Load it", "Click a paint on the palette. Click a second paint to mix it into what's on the brush." },
@@ -911,23 +840,12 @@ namespace Studio
 							{ "Paint", "How thick the paint is. Thin is a glaze you can see through, however much you go over it in one stroke. Full covers what's under it." },
 							{ "Strokes", "Every stroke starts light and comes up to full pressure. A quick flick lays down less paint." },
 						});
-					GuideTab("Blending", "Wet paint on the layer you're painting mixes the way pigments do: blue and yellow make green.",
+					GuideTab("Blending", "Wet paint on the canvas mixes the way pigments do: blue and yellow make green.",
 						{
-							{ "Wet into wet", "Paint over wet paint on the same layer and the two mix on the canvas." },
+							{ "Wet into wet", "Paint over wet paint and the two mix on the canvas." },
 							{ "Blend", "Wipe the brush on the rag, then drag the clean brush through the paint to soften and smear it." },
-							{ "Lift paint", "Take the rag (click it with an empty hand, or press E) and rub the canvas to wipe paint off the layer. Press harder to take more." },
+							{ "Lift paint", "Take the rag (click it with an empty hand, or press E) and rub the canvas to wipe paint off. Press harder to take more." },
 							{ "Take a colour", "Ctrl + click on the canvas dips the brush into the colour there." },
-							{ "Dry layers", "Paint on the layers underneath counts as dry: it won't mix into what you paint on top." },
-						});
-					GuideTab("Layers", "Up to 8 layers, front at the top of the list. You always paint on the highlighted one.",
-						{
-							{ "New / Del", "Add a layer above the current one, or remove the current one." },
-							{ "Up / Down", "Move the current layer nearer the front or the back." },
-							{ "Eye box", "Show or hide a layer." },
-							{ "Layer opacity", "How strongly the whole layer shows." },
-							{ "Glaze", "The layer tints and deepens what is under it instead of covering it: shadows, warm light, colour washes." },
-							{ "Only over paint", "You can only paint where the layer already has paint: shading inside a shape without going over its edge." },
-							{ "Scrape this layer", "Takes all the paint off the current layer (Undo brings it back)." },
 						});
 					GuideTab("Seeing", "You paint on the canvas on the easel, with the world around it: paint what's in front of you.",
 						{
@@ -1027,6 +945,10 @@ namespace Studio
 				g_paint.SetCurrent(top);
 				g_paint.RecompositeAll();
 				g_paint.MarkSaved();
+				// one layer of paint now: a painting made with layers is merged (hidden ones too, nothing is lost)
+				if (g_paint.Flatten()) {
+					spdlog::info("Studio: merged {} layer(s) into one", doc->layers.size());
+				}
 				spdlog::info("Studio: continuing {} ({} layer(s))", Art::ToUtf8(a_work.dir), layers.size());
 			} else {
 				spdlog::warn("Studio: saved painting is {}x{}, the canvas {}x{} - starting blank", doc->w, doc->h, W, H);
@@ -1224,7 +1146,7 @@ namespace Studio
 			ImGui::OpenPopup("##clear");
 			g_openClear = false;
 		}
-		if (ConfirmPopup("##clear", "Scrape all the paint off this layer? (Undo can bring it back.)", "Scrape")) {
+		if (ConfirmPopup("##clear", "Scrape all the paint off the canvas? (Undo can bring it back.)", "Scrape")) {
 			g_paint.ClearLayer(g_paint.Current());
 		}
 		if (g_openFinish) {
