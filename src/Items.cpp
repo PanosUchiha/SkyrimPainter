@@ -530,7 +530,27 @@ namespace Items
 		a_out.name = s.name;
 		a_out.portrait = s.portrait;
 		a_out.dds = SlotDds(s);
+		a_out.dir = SlotDir(s.id);
 		return true;
+	}
+
+	void RenamePainting(int a_slot, std::string a_name)
+	{
+		while (!a_name.empty() && std::isspace(static_cast<unsigned char>(a_name.back()))) {
+			a_name.pop_back();
+		}
+		if (a_name.empty() || a_slot < 0 || a_slot >= Forms::kPaintingSlots) {
+			return;
+		}
+		{
+			std::lock_guard lk(g_mtx);
+			if (!g_slots[a_slot].used) {
+				return;
+			}
+			g_slots[a_slot].name = a_name;  // kept in the co-save with the slot
+		}
+		SKSE::GetTaskInterface()->AddTask([a_slot] { NameBook(a_slot); });
+		spdlog::info("Items: painting {} renamed to \"{}\"", a_slot, a_name);
 	}
 
 	void EnsureSlotTexture(int a_slot)

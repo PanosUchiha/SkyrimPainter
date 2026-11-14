@@ -30,13 +30,15 @@ namespace Items
 	struct SlotView
 	{
 		std::string name;
-		std::string dds;  // game path of its texture
-		bool        portrait = false;
+		std::string           dds;  // game path of its texture
+		bool                  portrait = false;
+		std::filesystem::path dir;  // its folder (flat.png is the picture)
 	};
 	bool GetSlot(int a_slot, SlotView& a_out);  // false if the slot is unused. Any thread.
 	void EnsureSlotTexture(int a_slot);          // re-makes the DDS from the saved picture if it's missing
 	void TakePaintingItem(int a_slot);           // main thread
 	void GivePaintingItem(int a_slot);           // main thread
+	void RenamePainting(int a_slot, std::string a_name);  // any thread: the slot and its item take the new name
 
 	// ---- the easel
 	RE::TESObjectACTI* EaselStandForm();
