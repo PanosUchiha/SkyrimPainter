@@ -297,6 +297,9 @@ namespace Studio
 		// the brush takes a colour
 		void LoadColour(const Rgb& a_c)
 		{
+			if (g_brush.type == Paint::kCharcoal) {
+				return;  // charcoal is charcoal
+			}
 			if (g_brush.Loaded() && g_brush.color != a_c) {
 				g_prevColour = g_brush.color;
 				g_hasPrev = true;
@@ -540,8 +543,11 @@ namespace Studio
 			if (!same) {
 				g_brush = g_rack[a_i];
 				g_brush.type = a_i;
-				if (!g_brush.Loaded()) {
-					Hint("Click a paint to load the brush");
+				if (a_i == Paint::kCharcoal) {
+					g_brush.color = Paint::kCharcoalColour;  // charcoal is always ready
+					g_brush.load = 1.0f;
+				} else if (!g_brush.Loaded()) {
+					Hint(a_i == Paint::kKnife ? "Click a paint to load the knife - wiped clean, it scrapes paint off" : "Click a paint to load the brush");
 				}
 			}
 		}
@@ -590,9 +596,15 @@ namespace Studio
 			rL = std::max(rL, minPx);
 			constexpr int kN = 40;
 			ImVec2        pts[kN];
+			const bool    blade = !g_rag && g_brush.type == Paint::kKnife;
 			for (int i = 0; i < kN; ++i) {
 				const float t = 6.2831853f * i / kN;
-				const float along = std::cos(t) * rL, across = std::sin(t) * rA;
+				float       along = std::cos(t) * rL, across = std::sin(t) * rA;
+				if (blade) {  // the knife's square end: the circle pushed out to a rectangle
+					const float k = 1.0f / std::max(std::fabs(std::cos(t)), std::fabs(std::sin(t)));
+					along *= k;
+					across *= k;
+				}
 				pts[i] = ToScreen(a_s, a_c.x + g_dir.x * along - g_dir.y * across, a_c.y + g_dir.y * along + g_dir.x * across);
 			}
 			a_dl->AddPolyline(pts, kN, IM_COL32(0, 0, 0, 120), ImDrawFlags_Closed, 2.4f);
@@ -848,7 +860,9 @@ namespace Studio
 			}
 			// a spot was clicked (for a puddle: pressed and let go without dragging it)
 			auto spotClicked = [&](int a_i, bool a_shift) {
-				if (g_rag) {
+				if (g_brush.type == Paint::kCharcoal) {
+					Hint("Charcoal doesn't take paint - pick up a brush or the knife");
+				} else if (g_rag) {
 					Hint("Put the rag down and pick up a brush to load paint");
 				} else if (g_brush.type < 0) {
 					Hint("Pick up a brush first: click one below the palette");
@@ -990,60 +1004,109 @@ namespace Studio
 				}
 			}
 
-			// ---- brushes and the rag
+			// ---- brushes (top row), then charcoal, the palette knife and the rag (the tools row)
 			ImGui::Dummy(ImVec2(0, U(6)));
 			Theme::SectionLabel("Brushes");
-			const float  cell = (a_w - U(70.0f)) / Paint::kBrushCount;
-			const float  rowH = U(96.0f);
-			const ImVec2 b0 = ImGui::GetCursorScreenPos();
+			constexpr int kRowBrushes = 5;  // the four brushes and the fan
+			const float   cell = a_w / kRowBrushes;
+			const float   rowH = U(84.0f);
+			const ImVec2  b0 = ImGui::GetCursorScreenPos();
 			ImGui::InvisibleButton("##brushrow", ImVec2(a_w, rowH + ImGui::GetTextLineHeightWithSpacing()));
-			for (int i = 0; i < Paint::kBrushCount; ++i) {
-				const ImVec2 c0 = b0 + ImVec2(cell * i, 0);
-				const bool   hov = ImGui::IsMouseHoveringRect(c0, c0 + ImVec2(cell, rowH));
+			auto cellFrame = [&](const ImVec2& c0, float w, const char* label, bool inHand) {
+				const bool hov = ImGui::IsMouseHoveringRect(c0, c0 + ImVec2(w, rowH));
 				if (hov) {
-					dl->AddRectFilled(c0, c0 + ImVec2(cell, rowH), IM_COL32(255, 255, 255, 18), 6.0f);
+					dl->AddRectFilled(c0, c0 + ImVec2(w, rowH), IM_COL32(255, 255, 255, 18), 6.0f);
 				}
-				const char* label = Paint::kBrushes[i].name;
 				const float tw = ImGui::CalcTextSize(label).x;
-				dl->AddText(c0 + ImVec2((cell - tw) * 0.5f, rowH), Theme::InkSoft(), label);
-				if (g_brush.type == i) {
-					dl->AddRect(c0 + ImVec2(4, 4), c0 + ImVec2(cell - 4, rowH - 4), Theme::GoldDim(), 6.0f, 0, 1.0f);
-					const char* inHand = "in hand";
-					dl->AddText(c0 + ImVec2((cell - ImGui::CalcTextSize(inHand).x) * 0.5f, rowH * 0.45f), Theme::Muted(), inHand);
-				} else {
-					const float len = cell * (0.75f + 0.08f * i);
+				dl->AddText(c0 + ImVec2((w - tw) * 0.5f, rowH), Theme::InkSoft(), label);
+				if (inHand) {
+					dl->AddRect(c0 + ImVec2(4, 4), c0 + ImVec2(w - 4, rowH - 4), Theme::GoldDim(), 6.0f, 0, 1.0f);
+					const char* t = "in hand";
+					dl->AddText(c0 + ImVec2((w - ImGui::CalcTextSize(t).x) * 0.5f, rowH * 0.45f), Theme::Muted(), t);
+				}
+				return hov;
+			};
+			static constexpr const char* kShort[Paint::kBrushCount] = { "Detail", "Round", "Filbert", "Flat", "Fan", "Charcoal", "Knife" };
+			for (int i = 0; i < kRowBrushes; ++i) {
+				const ImVec2 c0 = b0 + ImVec2(cell * i, 0);
+				const bool   hov = cellFrame(c0, cell, kShort[i], g_brush.type == i);
+				if (g_brush.type != i) {
+					const float len = cell * (0.8f + 0.06f * i);
 					DrawBrushPic(dl, c0 + ImVec2(cell * 0.5f + len * 0.4f, rowH * 0.5f - len * 0.24f), len, nullptr);
 				}
 				if (hov) {
-					ImGui::SetTooltip("%s - %s", label, g_brush.type == i ? "click to put it down" : "click to pick it up");
+					ImGui::SetTooltip("%s (%d) - %s", Paint::kBrushes[i].name, i + 1, g_brush.type == i ? "click to put it down" : "click to pick it up");
 					if (click) {
 						PickBrush(i);
 					}
 				}
 			}
-			// the rag
-			const ImVec2 r0 = b0 + ImVec2(cell * Paint::kBrushCount + U(6), U(14));
-			const ImVec2 r1 = r0 + ImVec2(U(60), rowH - U(28));
-			dl->AddRectFilled(r0, r1, IM_COL32(205, 196, 176, 255), U(8));
-			for (int k = 1; k < 4; ++k) {
-				dl->AddLine(r0 + ImVec2(0, (r1.y - r0.y) * k / 4), r0 + ImVec2(r1.x - r0.x, (r1.y - r0.y) * k / 4 + U(4)), IM_COL32(160, 150, 130, 255), 1.0f);
-			}
-			dl->AddText(ImVec2(r0.x + U(14), r1.y + U(14)), Theme::InkSoft(), "Rag");
-			if (ImGui::IsMouseHoveringRect(r0, r1)) {
-				ImGui::SetTooltip("%s", g_brush.type >= 0 ? "Click: wipe the brush clean (a clean brush blends the wet paint)"
-				                  : g_rag              ? "Click: put the rag down"
-				                                       : "Click: take the rag - it lifts paint off the canvas (E)");
-				if (click) {
-					if (g_brush.type >= 0) {
-						g_brush.load = 0.0f;
-						g_brush.color = {};
-					} else {
-						ToggleRag();
+
+			Theme::SectionLabel("Tools");
+			const float  tcell = a_w / 3.0f;
+			const ImVec2 t0 = ImGui::GetCursorScreenPos();
+			ImGui::InvisibleButton("##toolrow", ImVec2(a_w, rowH + ImGui::GetTextLineHeightWithSpacing()));
+			// charcoal: a dark stick
+			{
+				const ImVec2 c0 = t0;
+				const bool   hov = cellFrame(c0, tcell, "Charcoal", g_brush.type == Paint::kCharcoal);
+				if (g_brush.type != Paint::kCharcoal) {
+					const ImVec2 m = c0 + ImVec2(tcell * 0.5f, rowH * 0.5f);
+					const ImVec2 d(tcell * 0.32f, -rowH * 0.22f), nrm(-d.y * 0.12f, d.x * 0.12f);
+					dl->AddQuadFilled(m - d - nrm, m - d + nrm, m + d + nrm, m + d - nrm, IM_COL32(34, 32, 30, 255));
+					dl->AddLine(m - d + nrm * 0.6f, m + d + nrm * 0.6f, IM_COL32(80, 76, 72, 255), 1.0f);
+				}
+				if (hov) {
+					ImGui::SetTooltip("Charcoal (6) - sketch the drawing first: dry and grainy, it doesn't mix with paint. A clean brush smudges it.");
+					if (click) {
+						PickBrush(Paint::kCharcoal);
 					}
 				}
 			}
-			if (g_rag) {
-				dl->AddRect(r0 - ImVec2(3, 3), r1 + ImVec2(3, 3), Theme::GoldDim(), U(8), 0, 1.0f);
+			// the palette knife: a handle and a thin cranked blade
+			{
+				const ImVec2 c0 = t0 + ImVec2(tcell, 0);
+				const bool   hov = cellFrame(c0, tcell, "Knife", g_brush.type == Paint::kKnife);
+				if (g_brush.type != Paint::kKnife) {
+					const ImVec2 m = c0 + ImVec2(tcell * 0.5f, rowH * 0.5f);
+					const float  sx = tcell * 0.36f, sy = rowH * 0.24f;
+					dl->AddLine(m + ImVec2(-sx, sy), m + ImVec2(-sx * 0.15f, sy * 0.15f), IM_COL32(110, 70, 40, 255), U(5.0f));  // handle
+					dl->AddLine(m + ImVec2(-sx * 0.15f, sy * 0.15f), m + ImVec2(sx * 0.05f, 0), IM_COL32(150, 150, 150, 255), U(1.5f));
+					dl->AddTriangleFilled(m + ImVec2(sx * 0.05f, -U(2)), m + ImVec2(sx, -sy), m + ImVec2(sx * 0.05f, U(3)), IM_COL32(190, 192, 196, 255));
+				}
+				if (hov) {
+					ImGui::SetTooltip("Palette knife (7) - loaded, it lays down flat slabs of thick paint; wiped clean, it scrapes paint off back to the canvas.");
+					if (click) {
+						PickBrush(Paint::kKnife);
+					}
+				}
+			}
+			// the rag
+			{
+				const ImVec2 c0 = t0 + ImVec2(tcell * 2.0f, 0);
+				const bool   hov = cellFrame(c0, tcell, "Rag", g_rag);
+				const ImVec2 r0 = c0 + ImVec2(tcell * 0.2f, rowH * 0.2f), r1 = c0 + ImVec2(tcell * 0.8f, rowH * 0.8f);
+				if (!g_rag) {
+					dl->AddRectFilled(r0, r1, IM_COL32(205, 196, 176, 255), U(8));
+					for (int k = 1; k < 4; ++k) {
+						dl->AddLine(r0 + ImVec2(0, (r1.y - r0.y) * k / 4), r0 + ImVec2(r1.x - r0.x, (r1.y - r0.y) * k / 4 + U(4)), IM_COL32(160, 150, 130, 255), 1.0f);
+					}
+				}
+				if (hov) {
+					const bool charcoal = g_brush.type == Paint::kCharcoal;
+					ImGui::SetTooltip("%s", charcoal                ? "Charcoal can't be wiped - put it down to take the rag"
+					                        : g_brush.type >= 0      ? "Click: wipe the brush clean (a clean brush blends the wet paint; a clean knife scrapes)"
+					                        : g_rag                  ? "Click: put the rag down"
+					                                                 : "Click: take the rag - it lifts paint off the canvas (E)");
+					if (click) {
+						if (g_brush.type >= 0 && !charcoal) {
+							g_brush.load = 0.0f;
+							g_brush.color = {};
+						} else if (g_brush.type < 0 || g_rag) {
+							ToggleRag();
+						}
+					}
+				}
 			}
 
 			// ---- what's in hand
@@ -1063,7 +1126,11 @@ namespace Studio
 				ImGui::SameLine();
 				static constexpr const char* kSizeNames[Paint::kSizeCount] = { "very small", "small", "", "large", "very large" };
 				const char* sz = kSizeNames[std::clamp(g_brush.size, 0, Paint::kSizeCount - 1)];
-				ImGui::Text("%s%s%s - %s", sz, *sz ? " " : "", Paint::kBrushes[g_brush.type].name, g_brush.Loaded() ? "loaded" : "clean, blends");
+				const char* state = g_brush.type == Paint::kCharcoal ? "sketching"
+				                    : g_brush.Loaded()               ? "loaded"
+				                    : g_brush.type == Paint::kKnife  ? "clean, scrapes"
+				                                                     : "clean, blends";
+				ImGui::Text("%s%s%s - %s", sz, *sz ? " " : "", Paint::kBrushes[g_brush.type].name, state);
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("[ and ] take a smaller or larger brush of the same kind");
 				}
@@ -1150,7 +1217,10 @@ namespace Studio
 							{ "Round", "General painting and soft shapes." },
 							{ "Filbert", "Rounded flat: blending, petals, leaves, skin." },
 							{ "Wide flat", "Skies, washes, large areas. It lies across the way you move it." },
-							{ "1 - 4", "Pick up a brush (press again to put it down)." },
+							{ "Fan brush", "A few bristles spread wide: flick it for grass, leaves, fur and wispy clouds." },
+							{ "Charcoal", "Sketch your drawing first, the way painters do. Dry and grainy, it doesn't mix with paint and is easy to paint over; drag a clean brush through it to smudge it." },
+							{ "Palette knife", "Loaded with paint, it lays down flat, sharp-edged slabs of thick paint - rocks, walls, a heavy sky. Wipe it on the rag and it scrapes paint off, back to the canvas." },
+							{ "1 - 7", "1-5 the brushes, 6 charcoal, 7 the palette knife (press again to put it down)." },
 							{ "[  and  ]", "A smaller or larger brush of the same kind." },
 							{ "X", "Back to the colour you had before - press again to swap back." },
 							{ "Straight line", "Shift + click paints a straight line from where your last stroke ended (you see it while Shift is held)." },
@@ -1190,7 +1260,7 @@ namespace Studio
 							{ "Mouse wheel", "Touch (pressure)" },
 							{ "Alt / Ctrl + click", "Take the colour from the canvas" },
 							{ "Shift + click", "Straight line from the last stroke" },
-							{ "1 - 4", "Pick up a brush" },
+							{ "1 - 7", "Brushes, charcoal (6), palette knife (7)" },
 							{ "X", "Swap to the colour before" },
 							{ "Ctrl + wheel", "Zoom (close-up)" },
 							{ "Middle / Space + drag", "Move the canvas (close-up)" },
@@ -1588,12 +1658,12 @@ namespace Studio
 				if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
 					ToggleRag();
 				}
-				for (int i = 0; i < Paint::kBrushCount && i < 4; ++i) {
+				for (int i = 0; i < Paint::kBrushCount; ++i) {  // 1-5 brushes, 6 charcoal, 7 palette knife
 					if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i), false)) {
 						PickBrush(i);
 					}
 				}
-				if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !io.KeyCtrl && g_brush.type >= 0) {
+				if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !io.KeyCtrl && g_brush.type >= 0 && g_brush.type != Paint::kCharcoal) {
 					if (g_hasPrev) {  // back to the colour before
 						const Rgb now = g_brush.color;
 						const bool loaded = g_brush.Loaded();

@@ -26,6 +26,9 @@ namespace Paint
 		{ "Round", 10.0f, 1.0f, 0.65f, 1.0f },
 		{ "Filbert", 19.0f, 1.6f, 0.60f, 1.1f },
 		{ "Wide flat", 34.0f, 3.2f, 0.55f, 1.2f },
+		{ "Fan brush", 26.0f, 2.6f, 0.55f, 1.0f, Kind::Fan },
+		{ "Charcoal", 4.5f, 1.0f, 0.5f, 1.0f, Kind::Charcoal },
+		{ "Palette knife", 16.0f, 3.5f, 0.95f, 1.0f, Kind::Knife },
 	};
 
 	namespace
@@ -64,12 +67,56 @@ namespace Paint
 			if (!made) {
 				made = true;
 				for (int b = 0; b < kBrushCount; ++b) {
-					auto&     m = tips[b].mask;
+					auto&      m = tips[b].mask;
+					const Kind kind = kBrushes[b].kind;
+					if (kind == Kind::Knife || kind == Kind::Charcoal) {
+						for (int y = 0; y < kTip; ++y) {
+							for (int x = 0; x < kTip; ++x) {
+								const float u = (x + 0.5f) / kTip * 2.0f - 1.0f, v = (y + 0.5f) / kTip * 2.0f - 1.0f;
+								float       val;
+								if (kind == Kind::Knife) {  // the blade: a hard-edged slab, very slightly ragged at its ends
+									val = (1.0f - Smooth(0.9f, 1.0f, std::fabs(u))) * (1.0f - Smooth(0.75f, 1.0f, std::fabs(v)));
+									val *= 0.92f + 0.08f * Rand(b * 7919 + y * 131 + x);
+								} else {  // charcoal: a soft round stick end, dusty and grainy
+									const float r = std::sqrt(u * u + v * v);
+									val = (1.0f - Smooth(0.45f, 1.0f, r)) * (0.55f + 0.45f * Rand(b * 7919 + y * 131 + x));
+								}
+								m[y * kTip + x] = std::clamp(val, 0.0f, 1.0f);
+							}
+						}
+						continue;
+					}
+					if (kind == Kind::Fan) {
+						// a few springy bristles, unevenly spread and of different lengths: broken, feathery marks
+						constexpr int kN = 13;
+						float         pos[kN], len[kN], str[kN], wid[kN];
+						for (int k = 0; k < kN; ++k) {
+							pos[k] = -0.92f + 1.84f * (k + 0.5f) / kN + (Rand(b * 401 + k * 17 + 1) - 0.5f) * 0.12f;
+							len[k] = 0.35f + 0.65f * Rand(b * 401 + k * 17 + 2);
+							str[k] = 0.35f + 0.65f * Rand(b * 401 + k * 17 + 3);
+							wid[k] = 0.02f + 0.03f * Rand(b * 401 + k * 17 + 4);
+						}
+						for (int y = 0; y < kTip; ++y) {
+							for (int x = 0; x < kTip; ++x) {
+								const float u = (x + 0.5f) / kTip * 2.0f - 1.0f, v = (y + 0.5f) / kTip * 2.0f - 1.0f;
+								float       val = 0.0f;
+								for (int k = 0; k < kN; ++k) {
+									const float d = std::fabs(u - pos[k]) / wid[k];
+									if (d < 1.0f && std::fabs(v) < len[k]) {
+										val = std::max(val, str[k] * (1.0f - d * d) * (1.0f - Smooth(len[k] * 0.6f, len[k], std::fabs(v))));
+									}
+								}
+								m[y * kTip + x] = std::clamp(val * (0.85f + 0.15f * Rand(b * 7919 + y * 131 + x)), 0.0f, 1.0f);
+							}
+						}
+						continue;
+					}
+					// the others: many bristles packed close
 					const int bristles = 10 + b * 14;
 					std::vector<float> across(kTip, 0.0f);
 					for (int k = 0; k < bristles; ++k) {
 						const float c = Rand(b * 977 + k * 31 + 1) * 2.0f - 1.0f;   // position across the tip
-						const float w = 0.6f / bristles + Rand(b * 977 + k * 31 + 2) * 1.2f / bristles;
+						const float w = kind == Kind::Fan ? 0.012f + Rand(b * 977 + k * 31 + 2) * 0.02f : 0.6f / bristles + Rand(b * 977 + k * 31 + 2) * 1.2f / bristles;
 						const float s = 0.55f + 0.45f * Rand(b * 977 + k * 31 + 3);
 						for (int i = 0; i < kTip; ++i) {
 							const float u = (i + 0.5f) / kTip * 2.0f - 1.0f;
@@ -461,12 +508,14 @@ namespace Paint
 
 	void Painting::Dab(Brush& a_brush, float a_x, float a_y, float a_pressure, float a_dirX, float a_dirY)
 	{
-		const bool lift = m_style.lift;
-		const bool smear = !lift && !a_brush.Loaded();
+		const bool  lift = m_style.lift;
 		if (!lift && a_brush.type < 0) {
 			return;
 		}
 		const auto& bt = kBrushes[std::clamp(a_brush.type, 0, kBrushCount - 1)];
+		const Kind  kind = lift ? Kind::Bristle : bt.kind;
+		const bool  scrape = !lift && kind == Kind::Knife && !a_brush.Loaded();  // a clean knife scrapes paint off
+		const bool  smear = !lift && !scrape && !a_brush.Loaded() && kind != Kind::Charcoal;
 		const float p = std::clamp(a_pressure, 0.05f, 1.0f);
 		// pressing harder splays the bristles; the rag is a soft wad of cloth
 		const float rAcross = lift ? 24.0f * (0.6f + 0.4f * p) : bt.radius * kSizes[std::clamp(a_brush.size, 0, kSizeCount - 1)] * (0.45f + 0.55f * p);
@@ -492,14 +541,19 @@ namespace Paint
 		const float ca = a_dirX, sa = a_dirY;  // stroke direction; u runs across it
 
 		// the tip's strength at a pixel, with the canvas weave: a light touch only catches the raised threads
-		const float tooth = (1.0f - Smooth(0.1f, 0.8f, p)) * (smear ? 0.3f : 0.7f);
+		float tooth = (1.0f - Smooth(0.1f, 0.8f, p)) * (smear ? 0.3f : 0.7f);
+		if (kind == Kind::Charcoal) {
+			tooth = 0.85f - 0.25f * p;  // charcoal always catches the weave: grainy, more so with a light hand
+		} else if (kind == Kind::Knife) {
+			tooth = 0.05f;  // the blade rides over the weave: paint sits on top
+		}
 		auto        tipAt = [&](int x, int y) {
             const float px = x + 0.5f - a_x, py = y + 0.5f - a_y;
             const float along = px * ca + py * sa;
             const float across = -px * sa + py * ca;
             const float u = across / rAcross, v = along / rAlong;
-            if (u * u + v * v >= 1.0f) {
-                return 0.0f;
+            if (kind == Kind::Knife ? (std::fabs(u) >= 1.0f || std::fabs(v) >= 1.0f) : u * u + v * v >= 1.0f) {
+                return 0.0f;  // (the blade is square-ended)
             }
             float m;
             if (lift) {  // cloth: soft, uneven
@@ -512,12 +566,19 @@ namespace Paint
                 const float g = m_grain[static_cast<std::size_t>(y) * m_w + x] / 255.0f;
                 m *= 1.0f - tooth * (1.0f - g);
             }
+            if (kind == Kind::Charcoal) {
+                // the surface's tooth: charcoal only catches on its high points, more of them with a heavier hand
+                const std::uint32_t hsh = static_cast<std::uint32_t>(x) * 73856093u ^ static_cast<std::uint32_t>(y) * 19349663u;
+                const float         t = Rand(hsh) * 0.6f + Rand(hsh / 7u + static_cast<std::uint32_t>(x / 3 + y / 3) * 83492791u) * 0.4f;
+                m *= std::clamp((t - (0.6f - 0.55f * p)) * 3.0f, 0.0f, 1.0f);
+            }
             return m;
 		};
 
-		if (lift) {
-			// ---- the rag: wipes paint off this layer, more with a heavier hand
-			const float strength = 0.25f + 0.5f * p;
+		if (lift || scrape) {
+			// ---- the rag: wipes paint off this layer, more with a heavier hand; a clean palette knife
+			// scrapes it off cleanly, back to the canvas
+			const float strength = scrape ? 0.55f + 0.4f * p : 0.25f + 0.5f * p;
 			for (int y = y0; y <= y1; ++y) {
 				for (int x = x0; x <= x1; ++x) {
 					const float m = tipAt(x, y);
@@ -598,6 +659,9 @@ namespace Paint
 			}
 			wet /= 5.0f;
 			Rgb deposit = a_brush.color;
+			// charcoal is dry: it never mixes with the paint; a knife lays its paint on cleaner than a brush
+			const float mixK = kind == Kind::Charcoal ? 0.0f : kind == Kind::Knife ? 0.35f : 1.0f;
+			wet *= mixK;
 			if (wet > 0.15f && wsum > 0.0f) {
 				const Rgb u{ static_cast<std::uint8_t>(under[0] / wsum), static_cast<std::uint8_t>(under[1] / wsum), static_cast<std::uint8_t>(under[2] / wsum) };
 				if ((m_dabs & 3) == 0) {
@@ -613,7 +677,12 @@ namespace Paint
 			const float flow = bt.flow * (0.25f + 0.75f * p);
 			const float cap = m_style.body * 255.0f;
 			// impasto: thick paint and a heavy hand leave paint standing up off the canvas
-			const float build = 70.0f * m_style.body * m_style.body * (0.2f + 0.8f * p);
+			float build = 70.0f * m_style.body * m_style.body * (0.2f + 0.8f * p);
+			if (kind == Kind::Charcoal) {
+				build = 0.0f;  // dust, not paint
+			} else if (kind == Kind::Knife) {
+				build = 150.0f * m_style.body * (0.5f + 0.5f * p);  // a slab of thick paint
+			}
 			const float dr = deposit[0], dg = deposit[1], db = deposit[2];
 			for (int y = y0; y <= y1; ++y) {
 				for (int x = x0; x <= x1; ++x) {

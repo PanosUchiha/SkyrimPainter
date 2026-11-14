@@ -32,6 +32,13 @@ namespace Paint
 {
 	using Rgb = Spectral::Rgb;
 
+	enum class Kind : int
+	{
+		Bristle = 0,  // the brushes: streaky bristle marks, wet paint mixes
+		Fan = 1,      // a few bristles fanned wide apart: broken, feathery marks (grass, leaves, clouds)
+		Charcoal = 2, // dry, grainy, always "loaded" with charcoal; no thickness, doesn't mix
+		Knife = 3,    // palette knife: loaded, a flat hard-edged slab of thick paint; clean, it scrapes paint off
+	};
 	struct BrushType
 	{
 		const char* name;
@@ -39,8 +46,11 @@ namespace Paint
 		float       aspect;     // tip width across the stroke / along it (flat brushes > 1)
 		float       flow;       // paint laid down per dab
 		float       unused;     // (was: how fast it ran out of paint)
+		Kind        kind = Kind::Bristle;
 	};
-	inline constexpr int       kBrushCount = 4;
+	inline constexpr int       kBrushCount = 7;   // 0-3 brushes, 4 fan, 5 charcoal, 6 palette knife
+	inline constexpr int       kFan = 4, kCharcoal = 5, kKnife = 6;
+	inline constexpr Rgb       kCharcoalColour{ 38, 36, 34 };
 	extern const BrushType     kBrushes[kBrushCount];
 
 	struct Brush

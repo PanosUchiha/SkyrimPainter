@@ -244,6 +244,9 @@ namespace Overlay
 			case 0x03: return ImGuiKey_2;
 			case 0x04: return ImGuiKey_3;
 			case 0x05: return ImGuiKey_4;
+			case 0x06: return ImGuiKey_5;
+			case 0x07: return ImGuiKey_6;
+			case 0x08: return ImGuiKey_7;
 			default: return ImGuiKey_None;
 			}
 		}
