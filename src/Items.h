@@ -80,10 +80,11 @@ namespace Items
 	std::optional<Work> TakeStudioRequest();  // any thread
 	// The studio paints on the canvas in the world: the canvas gets a texture of its own for the session
 	// (a_dds, a new name), made from a_flat; the studio then draws straight into it. Any thread.
-	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
+	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal);
 	// After the studio saved the layers to Work::dir (worker thread):
-	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
-	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h);
+	// a_normal: the painting's relief and shine (RGBA8, same size as a_flat; empty = flat canvas)
+	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal);
+	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal);
 
 	void WriteString(SKSE::SerializationInterface* a_intfc, const std::string& a_s);
 	bool ReadString(SKSE::SerializationInterface* a_intfc, std::string& a_s);

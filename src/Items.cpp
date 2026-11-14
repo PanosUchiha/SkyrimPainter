@@ -15,7 +15,9 @@
 #include "Items.h"
 
 #include "Art.h"
+#include "Dds.h"
 #include "Forms.h"
+#include "Paint.h"
 #include "Place.h"
 #include "Store.h"
 
@@ -667,7 +669,15 @@ namespace Items
 				auto flat = std::make_shared<std::vector<std::uint8_t>>();
 				int  w = 0, h = 0;
 				const bool haveFlat = Store::LoadFlat(dir, *flat, w, h);
-				WithEasel(a_easel, [toPortrait, haveFlat, flat, w, h](RE::TESObjectREFR* a_stand, Easel& e) {
+				auto       relief = std::make_shared<std::vector<std::uint8_t>>();
+				{
+					std::vector<std::uint8_t> th;
+					int                       tw = 0, thh = 0;
+					if (haveFlat && Store::LoadThickness(dir, th, tw, thh) && tw == w && thh == h) {
+						Paint::MakeNormalMap(th, tw, thh, static_cast<Paint::Varnish>(Store::LoadVarnish(dir)), Art::ReliefStyle(), *relief);
+					}
+				}
+				WithEasel(a_easel, [toPortrait, haveFlat, flat, relief, w, h](RE::TESObjectREFR* a_stand, Easel& e) {
 					DeleteRef(e.canvas);
 					e.portrait = toPortrait;
 					e.canvas = SpawnCanvas(a_stand, toPortrait);
@@ -675,7 +685,8 @@ namespace Items
 					e.wipDds.clear();
 					if (haveFlat) {
 						e.wipDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", e.workId, Art::NewId());
-						Art::ConvertAndShow(std::move(*flat), w, h, e.wipDds, toPortrait ? kWipShort : kWipLong, toPortrait ? kWipLong : kWipShort, e.canvas);
+						Art::ConvertAndShow(std::move(*flat), w, h, e.wipDds, toPortrait ? kWipShort : kWipLong, toPortrait ? kWipLong : kWipShort, e.canvas,
+							std::move(*relief));
 					}
 				});
 			}).detach();
@@ -767,10 +778,11 @@ namespace Items
 		return out;
 	}
 
-	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	void StepAway(RE::ObjectRefHandle a_easel, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal)
 	{
 		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
-		WithEasel(a_easel, [flat, a_w, a_h](RE::TESObjectREFR*, Easel& e) {
+		auto relief = std::make_shared<std::vector<std::uint8_t>>(std::move(a_normal));
+		WithEasel(a_easel, [flat, relief, a_w, a_h](RE::TESObjectREFR*, Easel& e) {
 			if (!e.canvas) {
 				return;
 			}
@@ -779,28 +791,32 @@ namespace Items
 			e.wipDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", e.workId, Art::NewId());
 			e.painted = true;
 			const bool portrait = a_h > a_w;
-			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas);
+			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas,
+				std::move(*relief));
 		});
 	}
 
-	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	void ShowLive(RE::ObjectRefHandle a_easel, std::string a_dds, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal)
 	{
 		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
-		WithEasel(a_easel, [flat, dds = std::move(a_dds), a_w, a_h](RE::TESObjectREFR*, Easel& e) {
+		auto relief = std::make_shared<std::vector<std::uint8_t>>(std::move(a_normal));
+		WithEasel(a_easel, [flat, relief, dds = std::move(a_dds), a_w, a_h](RE::TESObjectREFR*, Easel& e) {
 			if (!e.canvas) {
 				return;
 			}
 			DeleteTextureLater(e.wipDds);
 			e.wipDds = dds;  // unique to this session: nothing else in the game uses it
 			const bool portrait = a_h > a_w;
-			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas);
+			Art::ConvertAndShow(std::move(*flat), a_w, a_h, e.wipDds, portrait ? kWipShort : kWipLong, portrait ? kWipLong : kWipShort, e.canvas,
+				std::move(*relief));
 		});
 	}
 
-	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h)
+	void Finish(RE::ObjectRefHandle a_easel, std::string a_name, std::vector<std::uint8_t> a_flat, int a_w, int a_h, std::vector<std::uint8_t> a_normal)
 	{
 		auto flat = std::make_shared<std::vector<std::uint8_t>>(std::move(a_flat));
-		SKSE::GetTaskInterface()->AddTask([a_easel, name = std::move(a_name), flat, a_w, a_h] {
+		auto relief = std::make_shared<std::vector<std::uint8_t>>(std::move(a_normal));
+		SKSE::GetTaskInterface()->AddTask([a_easel, name = std::move(a_name), flat, relief, a_w, a_h] {
 			auto stand = a_easel.get();
 			if (!stand) {
 				return;
@@ -847,9 +863,15 @@ namespace Items
 			// files: the layers move to the painting's own folder, the DDS is written at full size
 			const auto work = WorkDir(e.workId), dest = SlotDir(s.id);
 			const auto dds = SlotDds(s);
-			std::thread([work, dest, dds, flat, a_w, a_h, slot, s] {
+			std::thread([work, dest, dds, flat, relief, a_w, a_h, slot, s] {
 				Store::CopyDoc(work, dest);
 				Store::RemoveDoc(work);
+				if (relief->size() == static_cast<std::size_t>(a_w) * a_h * 4) {  // the relief and varnish, before the colour
+					std::string err;
+					if (!Dds::ConvertNormalMap(relief->data(), a_w, a_h, a_w, a_h, Art::DataPath(Art::NormalPath(dds)), err)) {
+						spdlog::warn("Could not write the relief of {}: {}", dds, err);
+					}
+				}
 				Art::ConvertNow(flat->data(), a_w, a_h, dds, a_w, a_h);
 				SKSE::GetTaskInterface()->AddTask([slot, s] {
 					GivePaintingItem(slot);

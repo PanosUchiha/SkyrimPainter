@@ -127,6 +127,11 @@ namespace Studio
 		bool                      g_spotsLoaded = false;
 		ID3D11Texture2D*          g_tex = nullptr;
 		ID3D11ShaderResourceView* g_srv = nullptr;
+		// the relief: the paint's thickness and the canvas weave as a normal map, lent to the canvas in the world
+		ID3D11Texture2D*          g_reliefTex = nullptr;
+		ID3D11ShaderResourceView* g_reliefSrv = nullptr;
+		std::vector<std::uint8_t> g_relief;  // RGBA8, the whole canvas
+		int                       g_varnish = 0;  // Paint::Varnish (chosen when finishing; kept with the painting)
 		std::vector<IUnknown*>    g_release;  // freed at the start of the next frame
 		Picture                   g_palettePic, g_brushPic;
 		char                      g_name[64]{};
@@ -220,6 +225,15 @@ namespace Studio
 				g_tex = nullptr;
 				return false;
 			}
+			// the relief (not needed to paint: without it the canvas just looks flat)
+			Paint::MakeNormalMap(g_paint.Thickness(), g_paint.Width(), g_paint.Height(), static_cast<Paint::Varnish>(g_varnish), Art::ReliefStyle(), g_relief);
+			D3D11_SUBRESOURCE_DATA rd{ g_relief.data(), static_cast<UINT>(g_paint.Width()) * 4, 0 };
+			if (SUCCEEDED(dev->CreateTexture2D(&d, &rd, &g_reliefTex)) && g_reliefTex) {
+				if (FAILED(dev->CreateShaderResourceView(g_reliefTex, nullptr, &g_reliefSrv)) || !g_reliefSrv) {
+					g_reliefTex->Release();
+					g_reliefTex = nullptr;
+				}
+			}
 			return true;
 		}
 
@@ -232,6 +246,22 @@ namespace Studio
 			D3D11_BOX   box{ static_cast<UINT>(r.x0), static_cast<UINT>(r.y0), 0, static_cast<UINT>(r.x1), static_cast<UINT>(r.y1), 1 };
 			const auto* src = &g_paint.Composite()[(static_cast<std::size_t>(r.y0) * g_paint.Width() + r.x0) * 4];
 			Overlay::Context()->UpdateSubresource(g_tex, 0, &box, src, static_cast<UINT>(g_paint.Width()) * 4, 0);
+			// the relief around the change (its slopes reach one pixel further)
+			if (g_reliefTex) {
+				Paint::Rect rr{ std::max(0, r.x0 - 1), std::max(0, r.y0 - 1), std::min(g_paint.Width(), r.x1 + 1), std::min(g_paint.Height(), r.y1 + 1) };
+				Paint::MakeNormalMap(g_paint.Thickness(), g_paint.Width(), g_paint.Height(), static_cast<Paint::Varnish>(g_varnish), Art::ReliefStyle(), g_relief, &rr);
+				D3D11_BOX   rbox{ static_cast<UINT>(rr.x0), static_cast<UINT>(rr.y0), 0, static_cast<UINT>(rr.x1), static_cast<UINT>(rr.y1), 1 };
+				const auto* rsrc = &g_relief[(static_cast<std::size_t>(rr.y0) * g_paint.Width() + rr.x0) * 4];
+				Overlay::Context()->UpdateSubresource(g_reliefTex, 0, &rbox, rsrc, static_cast<UINT>(g_paint.Width()) * 4, 0);
+			}
+		}
+
+		// the whole relief for saving, with the varnish
+		std::vector<std::uint8_t> ReliefFor(int a_varnish)
+		{
+			std::vector<std::uint8_t> out;
+			Paint::MakeNormalMap(g_paint.Thickness(), g_paint.Width(), g_paint.Height(), static_cast<Paint::Varnish>(a_varnish), Art::ReliefStyle(), out);
+			return out;
 		}
 
 		// ---- the palette's paint spots (pigments + what the player mixed, kept in the INI)
@@ -371,6 +401,8 @@ namespace Studio
 			for (const auto& l : g_paint.Layers()) {
 				doc.layers.push_back({ l.name, l.visible, l.opacity, l.px, static_cast<int>(l.blend), l.lockAlpha });
 			}
+			doc.thickness = g_paint.Thickness();
+			doc.varnish = g_varnish;
 			std::vector<std::uint8_t> flat = g_paint.Composite();
 			std::thread([doc = std::move(doc), flat = std::move(flat), dir = g_work.dir]() mutable {
 				std::lock_guard lk(g_saveMtx);
@@ -391,10 +423,13 @@ namespace Studio
 			for (const auto& l : g_paint.Layers()) {
 				doc.layers.push_back({ l.name, l.visible, l.opacity, l.px, static_cast<int>(l.blend), l.lockAlpha });
 			}
+			doc.thickness = g_paint.Thickness();
+			doc.varnish = g_varnish;
 			std::vector<std::uint8_t> flat = g_paint.Composite();
+			std::vector<std::uint8_t> relief = ReliefFor(g_varnish);
 			const auto                dir = g_work.dir;
 			const auto                easel = g_work.easel;
-			std::thread([doc = std::move(doc), flat = std::move(flat), dir, easel, a_finish, name = std::move(a_name)]() mutable {
+			std::thread([doc = std::move(doc), flat = std::move(flat), relief = std::move(relief), dir, easel, a_finish, name = std::move(a_name)]() mutable {
 				std::string err;
 				bool        saved;
 				{
@@ -407,9 +442,9 @@ namespace Studio
 					return;
 				}
 				if (a_finish) {
-					Items::Finish(easel, std::move(name), std::move(flat), doc.w, doc.h);
+					Items::Finish(easel, std::move(name), std::move(flat), doc.w, doc.h, std::move(relief));
 				} else {
-					Items::StepAway(easel, std::move(flat), doc.w, doc.h);
+					Items::StepAway(easel, std::move(flat), doc.w, doc.h, std::move(relief));
 				}
 			}).detach();
 		}
@@ -428,6 +463,14 @@ namespace Studio
 			if (g_tex) {
 				g_release.push_back(g_tex);
 				g_tex = nullptr;
+			}
+			if (g_reliefSrv) {
+				g_release.push_back(g_reliefSrv);
+				g_reliefSrv = nullptr;
+			}
+			if (g_reliefTex) {
+				g_release.push_back(g_reliefTex);
+				g_reliefTex = nullptr;
 			}
 			g_open = false;
 			g_painting = false;
@@ -1097,6 +1140,8 @@ namespace Studio
 							{ "Your colours", "Every colour you paint with appears in the row under the palette. Click one to load it again." },
 							{ "Paint", "Drag on the canvas standing on the easel with the left mouse button - the paint goes straight onto it. Press C for a flat close-up instead." },
 							{ "Clean the brush", "Click the rag." },
+							{ "Thick paint", "Full-bodied paint and a heavy touch leave ridges of paint on the canvas that catch the light, bristle marks and all. Thin paint stays flat. The rag and a clean brush flatten it again." },
+							{ "Varnish", "When you finish, choose Matte, Satin or Gloss: how much the finished painting shines in the light." },
 							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later. Your work is also saved every few minutes while you paint." },
 						});
 					GuideTab("Brushes", "Each brush leaves its own mark. The outline on the canvas shows where it will touch and how big it is.",
@@ -1214,6 +1259,7 @@ namespace Studio
 		g_work = a_work;
 		const int W = Art::Width(a_work.portrait), H = Art::Height(a_work.portrait);
 		g_paint.Reset(W, H, MakeBlank(W, H));
+		g_varnish = 0;
 		if (auto doc = Store::LoadDoc(a_work.dir)) {
 			if (doc->w == W && doc->h == H) {
 				auto& layers = g_paint.Layers();
@@ -1228,6 +1274,8 @@ namespace Studio
 				}
 				g_paint.SetCurrent(top);
 				g_paint.RecompositeAll();
+				g_paint.SetThickness(std::move(doc->thickness));
+				g_varnish = doc->varnish;
 				g_paint.MarkSaved();
 				// one layer of paint now: a painting made with layers is merged (hidden ones too, nothing is lost)
 				if (g_paint.Flatten()) {
@@ -1266,7 +1314,7 @@ namespace Studio
 		g_liveDds.clear();
 		if (a_work.canvas) {
 			g_liveDds = fmt::format("textures\\SkyrimPainter\\InProgress\\{}_{}.dds", Art::ToUtf8(a_work.dir.filename()), Art::NewId());
-			Items::ShowLive(a_work.easel, g_liveDds, g_paint.Composite(), W, H);
+			Items::ShowLive(a_work.easel, g_liveDds, g_paint.Composite(), W, H, g_relief);
 			Live::FaceCanvas(a_work.canvas, a_work.portrait);
 		} else {
 			g_closeUp = true;
@@ -1289,7 +1337,7 @@ namespace Studio
 
 		// the canvas on the easel shows the studio's picture as it is painted
 		if (!g_liveDds.empty()) {
-			Live::Attach(g_work.canvas, g_liveDds, g_tex, g_srv);
+			Live::Attach(g_work.canvas, g_liveDds, g_tex, g_srv, g_reliefTex, g_reliefSrv);
 			if (!Live::Attached() && !g_liveWarned && ImGui::GetTime() - g_openedAt > 6.0) {
 				g_liveWarned = true;  // couldn't hook up: the close-up still works
 				spdlog::warn("Studio: could not paint on the canvas in the world - using the close-up");
@@ -1479,6 +1527,28 @@ namespace Studio
 				ImGui::SetKeyboardFocusHere();
 			}
 			const bool enter = ImGui::InputText("##name", g_name, sizeof g_name, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+			ImGui::Dummy(ImVec2(0, Theme::S(8)));
+			// the varnish: how the finished painting catches the light
+			static int finishVarnish = 2;
+			if (finishFocus == 2) {  // (the popup just opened)
+				finishVarnish = g_varnish > 0 ? g_varnish : static_cast<int>(Paint::Varnish::Satin);
+			}
+			ImGui::TextUnformatted("Varnish");
+			static constexpr const char* kVarnish[3] = { "Matte", "Satin", "Gloss" };
+			static constexpr const char* kVarnishTip[3] = { "No shine at all - flat and soft", "A soft sheen, like most oil paintings",
+				"A bright, wet-looking shine" };
+			const float vw = (Theme::S(420) - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+			for (int v = 1; v <= 3; ++v) {
+				if (v > 1) {
+					ImGui::SameLine();
+				}
+				if (Theme::Button(kVarnish[v - 1], ImVec2(vw, 0), finishVarnish == v)) {
+					finishVarnish = v;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", kVarnishTip[v - 1]);
+				}
+			}
 			ImGui::Dummy(ImVec2(0, Theme::S(10)));
 			bool done = enter;
 			if (Theme::Button("Finish", ImVec2(Theme::S(200), 0), true)) {
@@ -1490,6 +1560,7 @@ namespace Studio
 			}
 			if (done) {
 				ImGui::CloseCurrentPopup();
+				g_varnish = finishVarnish;  // kept with the painting
 				SaveAndThen(true, g_name);
 				Close(true);
 			}

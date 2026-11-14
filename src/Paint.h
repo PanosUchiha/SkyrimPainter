@@ -137,11 +137,17 @@ namespace Paint
 		// Rotates everything a quarter turn (clockwise or not): width and height swap.
 		void Rotate(bool a_clockwise, const std::vector<std::uint8_t>& a_newBlank);
 
+		// ---- how thick the paint is (impasto): 0 = bare canvas .. 255 = thick ridges. Heavy strokes and
+		// thick paint build it up along the bristle marks; smearing drags it, the rag wipes it.
+		const std::vector<std::uint8_t>& Thickness() const { return m_height; }
+		void                             SetThickness(std::vector<std::uint8_t> a_height);  // (wrong size = bare)
+
 	private:
 		struct UndoStep
 		{
 			int                       layer;
 			std::vector<std::uint8_t> px;
+			std::vector<std::uint8_t> height;
 		};
 
 		void Dab(Brush& a_brush, float a_x, float a_y, float a_pressure, float a_dirX, float a_dirY);
@@ -154,6 +160,7 @@ namespace Paint
 		std::vector<std::uint8_t> m_grain;  // the canvas weave: 255 = a raised thread, 0 = the hollows between
 		std::vector<std::uint8_t> m_cover;  // how much the current stroke has covered each pixel (as opacity)
 		std::vector<std::uint8_t> m_wet;    // how wet the paint is: fresh from a stroke, drying with each stroke after
+		std::vector<std::uint8_t> m_height; // how thick the paint is
 		std::vector<std::uint8_t> m_composite;
 		std::vector<Layer>        m_layers;
 		int                       m_current = 0;
@@ -201,4 +208,23 @@ namespace Paint
 
 	// Rotates RGBA pixels a quarter turn; a_w / a_h are the source size.
 	std::vector<std::uint8_t> Rotate90(const std::vector<std::uint8_t>& a_px, int a_w, int a_h, bool a_clockwise);
+	std::vector<std::uint8_t> Rotate90Gray(const std::vector<std::uint8_t>& a_px, int a_w, int a_h, bool a_clockwise);
+
+	// ---- the canvas's relief and shine for the game: a tangent-space normal map
+	enum class Varnish : int
+	{
+		None = 0,   // not varnished: only the oil paint itself has a slight sheen
+		Matte = 1,  // flat, no shine at all
+		Satin = 2,
+		Gloss = 3,
+	};
+	struct NormalStyle
+	{
+		bool swapXY = true;    // the game reads the mesh's tangent / bitangent the other way round from ours
+		bool flipY = false;    // (INI: if the relief looks lit from the wrong side)
+	};
+	// RGBA8 normal map of the whole canvas (a_w x a_h) from the paint's thickness and the canvas weave;
+	// alpha = specular. a_rect limits the work to a part (a_out is still the whole canvas).
+	void MakeNormalMap(const std::vector<std::uint8_t>& a_height, int a_w, int a_h, Varnish a_varnish, const NormalStyle& a_style,
+		std::vector<std::uint8_t>& a_out, const Rect* a_rect = nullptr);
 }
