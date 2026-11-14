@@ -200,7 +200,7 @@ namespace Menus
 				g_pickPainting = false;
 			}
 		} else if (!e.hasCanvas) {
-			const char* noCanvas = "You need a Blank Canvas (tanning rack: 1 Leather)";
+			const char* noCanvas = "You need a Blank Canvas (tanning rack: 2 Linen Wrap, 1 Firewood)";
 			if (Wide("Put on a blank canvas - landscape", e.haveCanvasItem, noCanvas, true)) {
 				Items::SetCanvas(e.easel, false);
 				close = true;
