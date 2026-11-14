@@ -851,7 +851,7 @@ namespace Studio
 							{ "M", "Mirror (close-up)" },
 							{ "Ctrl+Z / Ctrl+Y", "Undo / redo" },
 							{ "Ctrl+0", "Whole canvas" },
-							{ "Tab", "Hide the panels" },
+							{ "Tab", "Hide the panel" },
 							{ "F1", "This guide" },
 							{ "Esc", "Close the guide, or step away from the easel" },
 						});
