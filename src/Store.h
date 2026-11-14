@@ -35,6 +35,8 @@ namespace Store
 		std::vector<LayerFile>    layers;
 		std::vector<std::uint8_t> thickness;  // w x h, how thick the paint is (thickness.png; empty = flat)
 		int                       varnish = 0;  // Paint::Varnish (meta.txt)
+		int                       strokes = 0;  // the work in it (meta.txt; -1 = from before this was counted)
+		int                       seconds = 0;  // time spent actually painting it
 	};
 
 	std::filesystem::path PaintingsFolder();  // finished paintings: Paintings\<id>
@@ -46,6 +48,7 @@ namespace Store
 	// the paint's thickness and the varnish only (for making the relief texture)
 	bool                LoadThickness(const std::filesystem::path& a_dir, std::vector<std::uint8_t>& a_px, int& a_w, int& a_h);
 	int                 LoadVarnish(const std::filesystem::path& a_dir);
+	void                LoadEffort(const std::filesystem::path& a_dir, int& a_strokes, int& a_seconds);  // -1, -1 if never counted
 	bool                HasDoc(const std::filesystem::path& a_dir);
 	// Replaces a_to with a copy of a_from.
 	bool                CopyDoc(const std::filesystem::path& a_from, const std::filesystem::path& a_to);

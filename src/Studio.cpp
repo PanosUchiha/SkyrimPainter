@@ -132,6 +132,9 @@ namespace Studio
 		ID3D11ShaderResourceView* g_reliefSrv = nullptr;
 		std::vector<std::uint8_t> g_relief;  // RGBA8, the whole canvas
 		int                       g_varnish = 0;  // Paint::Varnish (chosen when finishing; kept with the painting)
+		int                       g_strokes = 0;          // strokes on this painting, all sessions
+		double                    g_paintSeconds = 0.0;   // time spent actually painting it, all sessions
+		double                    g_lastStrokeAt = -1e9;  // time only counts while you're painting, not standing there
 		std::vector<IUnknown*>    g_release;  // freed at the start of the next frame
 		Picture                   g_palettePic, g_brushPic;
 		char                      g_name[64]{};
@@ -386,6 +389,15 @@ namespace Studio
 
 		// ---- autosave: the work folder every few minutes while painting, so a crash loses little
 		constexpr double kAutosaveEvery = 180.0;  // seconds
+		// The work that sets the price: each stroke counts, and the time since the last one does too, up to
+		// 20 seconds (stepping back to look is painting; leaving the studio open is not).
+		void CountStroke(double a_now)
+		{
+			++g_strokes;
+			g_paintSeconds += std::clamp(a_now - g_lastStrokeAt, 0.0, 20.0);
+			g_lastStrokeAt = a_now;
+		}
+
 		int              g_edits = 0;            // strokes, undos, redos... since the studio opened
 		int              g_editsSaved = 0;
 		double           g_autosavedAt = 0.0;
@@ -406,6 +418,8 @@ namespace Studio
 			}
 			doc.thickness = g_paint.Thickness();
 			doc.varnish = g_varnish;
+			doc.strokes = g_strokes;
+			doc.seconds = static_cast<int>(g_paintSeconds);
 			std::vector<std::uint8_t> flat = g_paint.Composite();
 			std::thread([doc = std::move(doc), flat = std::move(flat), dir = g_work.dir]() mutable {
 				std::lock_guard lk(g_saveMtx);
@@ -428,6 +442,8 @@ namespace Studio
 			}
 			doc.thickness = g_paint.Thickness();
 			doc.varnish = g_varnish;
+			doc.strokes = g_strokes;
+			doc.seconds = static_cast<int>(g_paintSeconds);
 			std::vector<std::uint8_t> flat = g_paint.Composite();
 			std::vector<std::uint8_t> relief = ReliefFor(g_varnish);
 			const auto                dir = g_work.dir;
@@ -666,6 +682,7 @@ namespace Studio
 					}
 					g_paint.EndStroke(Held());
 					++g_edits;
+					CountStroke(now);
 					g_lineFrom = m;
 				} else {
 					// painting on a hidden layer would leave no mark you can see: show it again
@@ -704,6 +721,7 @@ namespace Studio
 					g_paint.EndStroke(Held());
 					g_painting = false;
 					++g_edits;
+					CountStroke(now);
 					g_lineFrom = m;  // Shift + click carries on from here
 					g_hasLineFrom = true;
 				}
@@ -1209,7 +1227,7 @@ namespace Studio
 							{ "Clean the brush", "Click the rag." },
 							{ "Thick paint", "Full-bodied paint and a heavy touch leave ridges of paint on the canvas that catch the light, bristle marks and all. Thin paint stays flat. The rag and a clean brush flatten it again." },
 							{ "Varnish", "When you finish, choose Matte, Satin or Gloss: how much the finished painting shines in the light." },
-							{ "Selling", "General goods merchants and innkeepers buy finished paintings. The price comes from the work in it: how much of the canvas is painted, the detail and the range of colours - a bare sketch fetches a few coins, a full, rich painting a few hundred. Varnish adds a little." },
+							{ "Selling", "General goods merchants and innkeepers buy finished paintings. The price comes from the painting - how much of the canvas is painted, the detail and the range of colours - and from the work that went into it: the time spent painting and the number of strokes. A quick scribble fetches a few coins; a full, rich painting worked on for 45 minutes or more, a few hundred. The Finish window shows what it would fetch." },
 							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later. Your work is also saved every few minutes while you paint." },
 						});
 					GuideTab("Brushes", "Each brush leaves its own mark. The outline on the canvas shows where it will touch and how big it is.",
@@ -1331,6 +1349,9 @@ namespace Studio
 		const int W = Art::Width(a_work.portrait), H = Art::Height(a_work.portrait);
 		g_paint.Reset(W, H, MakeBlank(W, H));
 		g_varnish = 0;
+		g_strokes = 0;
+		g_paintSeconds = 0.0;
+		g_lastStrokeAt = -1e9;
 		if (auto doc = Store::LoadDoc(a_work.dir)) {
 			if (doc->w == W && doc->h == H) {
 				auto& layers = g_paint.Layers();
@@ -1347,6 +1368,8 @@ namespace Studio
 				g_paint.RecompositeAll();
 				g_paint.SetThickness(std::move(doc->thickness));
 				g_varnish = doc->varnish;
+				g_strokes = std::max(0, doc->strokes);
+				g_paintSeconds = std::max(0, doc->seconds);
 				g_paint.MarkSaved();
 				// one layer of paint now: a painting made with layers is merged (hidden ones too, nothing is lost)
 				if (g_paint.Flatten()) {
@@ -1619,6 +1642,19 @@ namespace Studio
 				if (ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("%s", kVarnishTip[v - 1]);
 				}
+			}
+			// what a merchant would pay for it
+			static std::int32_t worth = 0;
+			static int          worthFor = -1;
+			if (finishFocus == 2 || worthFor != finishVarnish) {
+				worthFor = finishVarnish;
+				worth = Items::Appraise(g_paint.Composite(), g_paint.Width(), g_paint.Height(), finishVarnish, g_strokes, static_cast<int>(g_paintSeconds));
+			}
+			ImGui::Dummy(ImVec2(0, Theme::S(6)));
+			ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::Muted()), "A merchant would pay about %d gold  (%d strokes, %d min of painting)", worth, g_strokes,
+				static_cast<int>(g_paintSeconds / 60.0));
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("The price comes from the painting - how much is painted, the detail, the colours - and from the work:\nthe time spent painting and the strokes it took. Full price takes about 45 minutes and 500 strokes.");
 			}
 			ImGui::Dummy(ImVec2(0, Theme::S(10)));
 			bool done = enter;

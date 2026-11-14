@@ -102,6 +102,8 @@ namespace Store
 		{
 			std::ofstream out(a_dir / L"meta.txt", std::ios::binary | std::ios::trunc);
 			out << "varnish=" << a_doc.varnish << "\n";
+			out << "strokes=" << a_doc.strokes << "\n";
+			out << "seconds=" << a_doc.seconds << "\n";
 		}
 		return WritePng(a_dir / L"flat.png", a_flat.data(), a_doc.w, a_doc.h, a_error);
 	}
@@ -120,6 +122,19 @@ namespace Store
 			}
 		}
 		return 0;
+	}
+
+	void LoadEffort(const fs::path& a_dir, int& a_strokes, int& a_seconds)
+	{
+		a_strokes = a_seconds = -1;
+		std::ifstream in(a_dir / L"meta.txt", std::ios::binary);
+		for (std::string line; std::getline(in, line);) {
+			if (line.rfind("strokes=", 0) == 0) {
+				a_strokes = std::max(0, std::atoi(line.c_str() + 8));
+			} else if (line.rfind("seconds=", 0) == 0) {
+				a_seconds = std::max(0, std::atoi(line.c_str() + 8));
+			}
+		}
 	}
 
 	std::optional<Doc> LoadDoc(const fs::path& a_dir)
@@ -176,6 +191,7 @@ namespace Store
 			doc.thickness.clear();
 		}
 		doc.varnish = LoadVarnish(a_dir);
+		LoadEffort(a_dir, doc.strokes, doc.seconds);
 		return doc;
 	}
 

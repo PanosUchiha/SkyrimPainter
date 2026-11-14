@@ -55,61 +55,6 @@ namespace Items
 
 		constexpr float kSoldSlotFreeAfterDays = 3.0f;  // merchants restock every 2 days; the sold painting is gone by then
 
-		// What a painting is worth: how much of the canvas is painted, how much is going on in it and how many
-		// colours it uses. A bare canvas is worth a few coins, a busy, colourful, finished painting a few hundred.
-		std::int32_t Appraise(const std::vector<std::uint8_t>& a_flat, int a_w, int a_h, int a_varnish)
-		{
-			if (a_w <= 0 || a_h <= 0 || a_flat.size() < static_cast<std::size_t>(a_w) * a_h * 4) {
-				return 10;
-			}
-			const int step = (std::max)(1, (std::max)(a_w, a_h) / 256);
-			auto      px = [&](int x, int y) { return &a_flat[(static_cast<std::size_t>(y) * a_w + x) * 4]; };
-			auto      lum = [](const std::uint8_t* p) { return 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2]; };
-			std::array<int, 40> bins{};
-			double              grad = 0.0;
-			int                 samples = 0, covered = 0;
-			for (int y = 0; y + step < a_h; y += step) {
-				for (int x = 0; x + step < a_w; x += step) {
-					const auto* p = px(x, y);
-					++samples;
-					// the bare primed canvas is about (248, 247, 244)
-					if (std::abs(p[0] - 248) + std::abs(p[1] - 247) + std::abs(p[2] - 244) < 24) {
-						continue;
-					}
-					++covered;
-					grad += std::fabs(lum(p) - lum(px(x + step, y))) + std::fabs(lum(p) - lum(px(x, y + step)));
-					const int mx = (std::max)({ p[0], p[1], p[2] }), mn = (std::min)({ p[0], p[1], p[2] });
-					if (mx - mn < 24) {
-						++bins[36 + (std::min)(3, mx / 64)];  // greys: four shades
-					} else {
-						float h = 0.0f;
-						if (mx == p[0]) {
-							h = std::fmod(static_cast<float>(p[1] - p[2]) / (mx - mn) + 6.0f, 6.0f);
-						} else if (mx == p[1]) {
-							h = static_cast<float>(p[2] - p[0]) / (mx - mn) + 2.0f;
-						} else {
-							h = static_cast<float>(p[0] - p[1]) / (mx - mn) + 4.0f;
-						}
-						++bins[(std::min)(11, static_cast<int>(h * 2.0f)) * 3 + (std::min)(2, mx / 86)];  // 12 hues x 3 values
-					}
-				}
-			}
-			if (samples == 0 || covered == 0) {
-				return 10;
-			}
-			const float cover = static_cast<float>(covered) / samples;
-			const float detail = std::clamp(static_cast<float>(grad / covered) / 30.0f, 0.0f, 1.0f);
-			int         used = 0;
-			for (int b : bins) {
-				used += b * 300 >= covered ? 1 : 0;  // at least a third of a percent of the paint
-			}
-			const float variety = std::clamp(used / 16.0f, 0.0f, 1.0f);
-			float       value = 10.0f + cover * (30.0f + 170.0f * detail + 110.0f * variety);
-			if (a_varnish > 0) {
-				value *= 1.1f;  // a varnished painting is a finished painting
-			}
-			return static_cast<std::int32_t>(std::lround(value));
-		}
 
 		struct Easel
 		{
@@ -641,7 +586,9 @@ namespace Items
 					std::vector<std::uint8_t> flat;
 					int                       w = 0, h = 0;
 					const auto                dir = SlotDir(id);
-					const std::int32_t        value = Store::LoadFlat(dir, flat, w, h) ? Appraise(flat, w, h, Store::LoadVarnish(dir)) : 50;
+					int                       strokes = -1, seconds = -1;
+					Store::LoadEffort(dir, strokes, seconds);
+					const std::int32_t value = Store::LoadFlat(dir, flat, w, h) ? Appraise(flat, w, h, Store::LoadVarnish(dir), strokes, seconds) : 30;
 					SKSE::GetTaskInterface()->AddTask([slot, id, value] {
 						{
 							std::lock_guard lk(g_mtx);
@@ -1045,7 +992,9 @@ namespace Items
 					}
 				}
 				Art::ConvertNow(flat->data(), a_w, a_h, dds, a_w, a_h);
-				const std::int32_t value = Appraise(*flat, a_w, a_h, Store::LoadVarnish(dest));
+				int strokes = -1, seconds = -1;
+				Store::LoadEffort(dest, strokes, seconds);
+				const std::int32_t value = Appraise(*flat, a_w, a_h, Store::LoadVarnish(dest), strokes, seconds);
 				SKSE::GetTaskInterface()->AddTask([slot, s, value] {
 					{
 						std::lock_guard lk(g_mtx);
@@ -1061,6 +1010,71 @@ namespace Items
 				});
 			}).detach();
 		});
+	}
+
+	// What a painting is worth: how much of the canvas is painted, how much is going on in it, how many colours it
+	// uses - and how long it was worked on, and with how many strokes.
+	std::int32_t Appraise(const std::vector<std::uint8_t>& a_flat, int a_w, int a_h, int a_varnish, int a_strokes, int a_seconds)
+	{
+		if (a_w <= 0 || a_h <= 0 || a_flat.size() < static_cast<std::size_t>(a_w) * a_h * 4) {
+			return 5;
+		}
+		const int step = (std::max)(1, (std::max)(a_w, a_h) / 256);
+		auto      px = [&](int x, int y) { return &a_flat[(static_cast<std::size_t>(y) * a_w + x) * 4]; };
+		auto      lum = [](const std::uint8_t* p) { return 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2]; };
+		std::array<int, 40> bins{};
+		double              grad = 0.0;
+		int                 samples = 0, covered = 0;
+		for (int y = 0; y + step < a_h; y += step) {
+			for (int x = 0; x + step < a_w; x += step) {
+				const auto* p = px(x, y);
+				++samples;
+				// the bare primed canvas is about (248, 247, 244)
+				if (std::abs(p[0] - 248) + std::abs(p[1] - 247) + std::abs(p[2] - 244) < 24) {
+					continue;
+				}
+				++covered;
+				grad += std::fabs(lum(p) - lum(px(x + step, y))) + std::fabs(lum(p) - lum(px(x, y + step)));
+				const int mx = (std::max)({ p[0], p[1], p[2] }), mn = (std::min)({ p[0], p[1], p[2] });
+				if (mx - mn < 24) {
+					++bins[36 + (std::min)(3, mx / 64)];  // greys: four shades
+				} else {
+					float h = 0.0f;
+					if (mx == p[0]) {
+						h = std::fmod(static_cast<float>(p[1] - p[2]) / (mx - mn) + 6.0f, 6.0f);
+					} else if (mx == p[1]) {
+						h = static_cast<float>(p[2] - p[0]) / (mx - mn) + 2.0f;
+					} else {
+						h = static_cast<float>(p[0] - p[1]) / (mx - mn) + 4.0f;
+					}
+					++bins[(std::min)(11, static_cast<int>(h * 2.0f)) * 3 + (std::min)(2, mx / 86)];  // 12 hues x 3 values
+				}
+			}
+		}
+		if (samples == 0 || covered == 0) {
+			return 5;
+		}
+		const float cover = static_cast<float>(covered) / samples;
+		const float detail = std::clamp(static_cast<float>(grad / covered) / 30.0f, 0.0f, 1.0f);
+		int         used = 0;
+		for (int b : bins) {
+			used += b * 300 >= covered ? 1 : 0;  // at least a third of a percent of the paint
+		}
+		const float variety = std::clamp(used / 16.0f, 0.0f, 1.0f);
+		float       value = 10.0f + cover * (30.0f + 170.0f * detail + 110.0f * variety);
+		if (a_varnish > 0) {
+			value *= 1.1f;  // a varnished painting is a finished painting
+		}
+		// ...and the work that went into it: time spent actually painting and the strokes it took. Both have to be
+		// there, so scribbling fast or leaving the studio open doesn't pay. Full price at about 45 minutes and 500 strokes.
+		if (a_strokes >= 0 && a_seconds >= 0) {
+			const float timeF = std::clamp(a_seconds / (45.0f * 60.0f), 0.0f, 1.0f);
+			const float strokeF = std::clamp(a_strokes / 500.0f, 0.0f, 1.0f);
+			value = 5.0f + (value - 5.0f) * (std::min)(timeF, strokeF);  // the smaller: spamming strokes fast earns little
+		} else {
+			value *= 0.6f;  // painted before the work was counted
+		}
+		return static_cast<std::int32_t>(std::lround(value));
 	}
 
 	void WriteString(SKSE::SerializationInterface* a_intfc, const std::string& a_s)
