@@ -4,6 +4,6 @@
 namespace CanvasGeom
 {
 	// corners of the painted face in the easel canvas model, at UV (0,0) (1,0) (1,1) (0,1): top-left first, clockwise as seen
-	inline constexpr float kLandscape[4][3] = { { 33.088f, 12.554f, 102.060f }, { -33.517f, 12.554f, 102.136f }, { -33.092f, 20.174f, 53.434f }, { 33.518f, 20.218f, 53.448f } };
-	inline constexpr float kPortrait[4][3] = { { 24.670f, 10.082f, 119.679f }, { -24.625f, 10.156f, 119.261f }, { -24.617f, 20.510f, 53.461f }, { 24.594f, 20.378f, 53.875f } };
+	inline constexpr float kLandscape[4][3] = { { 33.088f, 14.270f, 102.328f }, { -33.517f, 14.270f, 102.405f }, { -33.092f, 21.891f, 53.703f }, { 33.518f, 22.009f, 53.729f } };
+	inline constexpr float kPortrait[4][3] = { { 24.670f, 11.522f, 119.905f }, { -24.625f, 11.596f, 119.486f }, { -24.617f, 22.024f, 53.697f }, { 24.595f, 21.818f, 54.100f } };
 }

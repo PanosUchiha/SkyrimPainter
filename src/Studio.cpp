@@ -1153,9 +1153,11 @@ namespace Studio
 		if (ConfirmPopup("##clear", "Scrape all the paint off the canvas? (Undo can bring it back.)", "Scrape")) {
 			g_paint.ClearLayer(g_paint.Current());
 		}
+		static int finishFocus = 0;
 		if (g_openFinish) {
 			ImGui::OpenPopup("##finish");
 			g_openFinish = false;
+			finishFocus = 3;  // the popup sizes itself on its first (hidden) frame: ask for the cursor a few frames
 		}
 		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 		if (ImGui::BeginPopupModal("##finish", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove)) {
@@ -1163,10 +1165,11 @@ namespace Studio
 			ImGui::Dummy(ImVec2(Theme::S(420), Theme::S(4)));
 			ImGui::TextUnformatted("Name your painting");
 			ImGui::SetNextItemWidth(Theme::S(420));
-			if (ImGui::IsWindowAppearing()) {
+			if (finishFocus > 0) {
+				--finishFocus;
 				ImGui::SetKeyboardFocusHere();
 			}
-			const bool enter = ImGui::InputText("##name", g_name, sizeof g_name, ImGuiInputTextFlags_EnterReturnsTrue);
+			const bool enter = ImGui::InputText("##name", g_name, sizeof g_name, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
 			ImGui::Dummy(ImVec2(0, Theme::S(10)));
 			bool done = enter;
 			if (Theme::Button("Finish", ImVec2(Theme::S(200), 0), true)) {

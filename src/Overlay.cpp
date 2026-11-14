@@ -358,9 +358,17 @@ namespace Overlay
 						m.down = down;
 						PushInput(m);
 					}
-					const bool altGr = g_ctrlDown && g_altDown;
-					if (down && (!g_ctrlDown || altGr)) {
-						if (const wchar_t c = KeyToChar(code, g_shiftDown, altGr); c != 0) {
+					// the keyboard as it really is now: a modifier whose release we missed (released while
+					// no window was open, Alt-Tab...) must not block typing
+					const bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+					const bool alt = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+					const bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+					g_ctrlDown = ctrl;
+					g_altDown = alt;
+					g_shiftDown = shift;
+					const bool altGr = ctrl && alt;
+					if (down && (!ctrl || altGr)) {
+						if (const wchar_t c = KeyToChar(code, shift, altGr); c != 0) {
 							InputMsg m{ InputMsg::Kind::Char };
 							m.button = static_cast<int>(c);
 							PushInput(m);
@@ -500,6 +508,20 @@ namespace Overlay
 
 		void DrainInput()
 		{
+			// ImGui's modifiers follow the real keyboard too, or a stuck Ctrl makes text boxes ignore typing
+			if (g_open) {
+				auto& io = ImGui::GetIO();
+				const bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+				const bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+				if (io.KeyCtrl != ctrl) {
+					io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+				}
+				if (io.KeyShift != shift) {
+					io.AddKeyEvent(ImGuiMod_Shift, shift);
+				}
+				g_ctrlDown = ctrl;
+				g_shiftDown = shift;
+			}
 			std::vector<InputMsg> msgs;
 			{
 				std::lock_guard lk(g_inputMtx);

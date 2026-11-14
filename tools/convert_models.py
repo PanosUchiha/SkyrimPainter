@@ -272,9 +272,16 @@ def easel_and_canvas(obj, texdir):
     dmin = ((bp - c) @ n).min()
     print(f"canvas board: {Wd:.1f} x {Ht:.1f} cm (aspect {Wd / Ht:.3f}), {(((bp - c) @ n).max() - dmin):.1f} cm deep")
 
+    # A deeper canvas than the model's (a gallery-wrapped stretcher): the back stays where it is, against
+    # the easel's mast, and the painted face comes forward by THICKER cm.
+    THICKER = 2.5
+    depth0 = -dmin
+    stretch = (depth0 + THICKER) / depth0
+
     def coords(p):  # board-local (right, up, depth) in cm
         q = np.asarray(p) - shift - c
-        return float(q @ r), float(q @ u), float(q @ n)
+        dd = float(q @ n)
+        return float(q @ r), float(q @ u), dmin + (dd - dmin) * stretch
 
     def turn(rr, uu, portrait):
         return (-uu, rr) if portrait else (rr, uu)
@@ -311,7 +318,7 @@ def easel_and_canvas(obj, texdir):
 
     def on_easel(portrait):
         lift = (Wd - Ht) / 2 if portrait else 0.0  # the bottom edge stays on the easel's ledge
-        fwd = forward if portrait else 0.0
+        fwd = 0.0
 
         def place(p):
             rr, uu, dd = coords(p)
@@ -324,13 +331,12 @@ def easel_and_canvas(obj, texdir):
             rr, uu = turn(float(d @ r), float(d @ u), portrait)
             return rot(r * rr + u * uu + n * float(d @ n))
 
-        if portrait:
-            raise_by = u * (Wd - Ht) + n * forward
-            top = make_mesh("SPCanvasClamp", TEX + "easel.dds", V, VT, VN, clamp, lambda p: local(np.asarray(p) + raise_by), rot)
-            return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
-                    make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait)), top]
+        # the canvas's own top clamp, brought forward with the face so its lip still holds the front edge
+        # (the easel's own clamp ends up hidden behind / inside the deeper canvas)
+        raise_by = u * ((Wd - Ht) if portrait else 0.0) + n * (THICKER + 0.1)
+        top = make_mesh("SPCanvasClamp", TEX + "easel.dds", V, VT, VN, clamp, lambda p: local(np.asarray(p) + raise_by), rot)
         return [make_mesh("SPCanvasBoard", TEX + "easel.dds", V, VT, VN, rest, place, drot),
-                make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait))]
+                make_mesh("SPCanvas", TEX + "canvas_blank.dds", V, VT, VN, front, place, drot, uv_for(portrait)), top]
 
     def flat(portrait):
         def place(p):  # the front faces Skyrim +Y, back at y = 0, centred
