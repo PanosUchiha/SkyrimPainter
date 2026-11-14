@@ -30,7 +30,7 @@ namespace Paint
 
 	namespace
 	{
-		constexpr int kUndoDepth = 20;
+		constexpr int kUndoDepth = 25;
 		constexpr int kTip = 64;  // tip mask resolution
 
 		std::uint32_t Hash(std::uint32_t x)

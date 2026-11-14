@@ -261,12 +261,25 @@ namespace Studio
 			SaveRecent();
 		}
 
+		Rgb  g_prevColour{};  // the colour before the last one (X swaps back to it)
+		bool g_hasPrev = false;
+
 		// the brush takes a colour
 		void LoadColour(const Rgb& a_c)
 		{
+			if (g_brush.Loaded() && g_brush.color != a_c) {
+				g_prevColour = g_brush.color;
+				g_hasPrev = true;
+			}
 			g_brush.color = a_c;
 			g_brush.load = 1.0f;
 		}
+
+		bool AltHeld() { return (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0; }
+
+		// a straight line: Shift + click carries on from where the last stroke ended
+		ImVec2 g_lineFrom{};
+		bool   g_hasLineFrom = false;
 
 		int ColourDistance(const Rgb& a_a, const Rgb& a_b)
 		{
@@ -336,6 +349,40 @@ namespace Studio
 		}
 
 		// ---- saving: the layers to the work folder, then the game side (worker thread)
+		std::mutex g_saveMtx;  // one save of the work folder at a time (autosave and stepping away)
+
+		// ---- autosave: the work folder every few minutes while painting, so a crash loses little
+		constexpr double kAutosaveEvery = 180.0;  // seconds
+		int              g_edits = 0;            // strokes, undos, redos... since the studio opened
+		int              g_editsSaved = 0;
+		double           g_autosavedAt = 0.0;
+
+		void AutosaveTick()
+		{
+			const double now = ImGui::GetTime();
+			if (g_painting || g_edits == g_editsSaved || now - g_autosavedAt < kAutosaveEvery) {
+				return;
+			}
+			g_autosavedAt = now;
+			g_editsSaved = g_edits;
+			Store::Doc doc;
+			doc.w = g_paint.Width();
+			doc.h = g_paint.Height();
+			for (const auto& l : g_paint.Layers()) {
+				doc.layers.push_back({ l.name, l.visible, l.opacity, l.px, static_cast<int>(l.blend), l.lockAlpha });
+			}
+			std::vector<std::uint8_t> flat = g_paint.Composite();
+			std::thread([doc = std::move(doc), flat = std::move(flat), dir = g_work.dir]() mutable {
+				std::lock_guard lk(g_saveMtx);
+				std::string     err;
+				if (Store::SaveDoc(dir, doc, flat, err)) {
+					spdlog::info("Studio: autosaved");
+				} else {
+					spdlog::warn("Studio: autosave failed: {}", err);
+				}
+			}).detach();
+		}
+
 		void SaveAndThen(bool a_finish, std::string a_name)
 		{
 			Store::Doc doc;
@@ -349,7 +396,12 @@ namespace Studio
 			const auto                easel = g_work.easel;
 			std::thread([doc = std::move(doc), flat = std::move(flat), dir, easel, a_finish, name = std::move(a_name)]() mutable {
 				std::string err;
-				if (!Store::SaveDoc(dir, doc, flat, err)) {
+				bool        saved;
+				{
+					std::lock_guard lk(g_saveMtx);
+					saved = Store::SaveDoc(dir, doc, flat, err);
+				}
+				if (!saved) {
 					spdlog::error("Studio: saving the painting failed: {}", err);
 					Art::Notify("SkyrimPainter: could not save the painting (see SkyrimPainter.log)");
 					return;
@@ -436,6 +488,21 @@ namespace Studio
 			g_brush = Paint::Brush{};
 		}
 
+		// pick up brush a_i (or put it down if it's the one in hand)
+		void PickBrush(int a_i)
+		{
+			g_rag = false;
+			const bool same = g_brush.type == a_i;
+			PutDownBrush();
+			if (!same) {
+				g_brush = g_rack[a_i];
+				g_brush.type = a_i;
+				if (!g_brush.Loaded()) {
+					Hint("Click a paint to load the brush");
+				}
+			}
+		}
+
 		void ToggleRag()
 		{
 			if (g_rag) {
@@ -518,7 +585,7 @@ namespace Studio
 
 			const double now = ImGui::GetTime();
 			if (!g_painting && a_canStart && inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-				if (io.KeyCtrl && !g_rag) {
+				if ((io.KeyCtrl || AltHeld()) && !g_rag) {
 					// dip the brush into the paint on the canvas (the colour picker)
 					if (g_brush.type < 0) {
 						Hint("Pick up a brush first: click one below the palette");
@@ -527,6 +594,24 @@ namespace Studio
 					}
 				} else if (!g_rag && g_brush.type < 0) {
 					Hint("Pick up a brush first: click one below the palette");
+				} else if (io.KeyShift && g_hasLineFrom) {
+					// a straight line from where the last stroke ended to here
+					Paint::StrokeStyle style;
+					style.body = g_body;
+					style.lift = g_rag;
+					if (!g_rag && g_brush.Loaded()) {
+						RememberColour(g_brush.color);
+					}
+					g_paint.BeginStroke(Held(), g_lineFrom.x, g_lineFrom.y, g_pressure, style);
+					const ImVec2 d = m - g_lineFrom;
+					const int    steps = std::max(1, static_cast<int>(std::sqrt(d.x * d.x + d.y * d.y) / 2.0f));
+					for (int k = 1; k <= steps; ++k) {
+						const float t = static_cast<float>(k) / steps;
+						g_paint.StrokeTo(Held(), g_lineFrom.x + d.x * t, g_lineFrom.y + d.y * t, g_pressure);
+					}
+					g_paint.EndStroke(Held());
+					++g_edits;
+					g_lineFrom = m;
 				} else {
 					// painting on a hidden layer would leave no mark you can see: show it again
 					if (const int cur = g_paint.Current(); !g_paint.Layers()[cur].visible) {
@@ -563,12 +648,18 @@ namespace Studio
 				if (up) {
 					g_paint.EndStroke(Held());
 					g_painting = false;
+					++g_edits;
+					g_lineFrom = m;  // Shift + click carries on from here
+					g_hasLineFrom = true;
 				}
 			}
 
 			// the cursor: the brush's footprint, right at the mouse
 			g_overCanvas = g_painting || (a_hovered && inside && !Overlay::Looking());
 			if (g_overCanvas) {
+				if (io.KeyShift && g_hasLineFrom && !g_painting) {
+					ImGui::GetForegroundDrawList()->AddLine(ToScreen(a_s, g_lineFrom.x, g_lineFrom.y), io.MousePos, IM_COL32(240, 228, 200, 160), 1.5f);
+				}
 				DrawFootprint(ImGui::GetForegroundDrawList(), a_s, m);
 			}
 		}
@@ -684,7 +775,7 @@ namespace Studio
 			// ---- the palette
 			const float  ph = a_w / PaletteSpots::kAspect;
 			const ImVec2 p0 = ImGui::GetCursorScreenPos();
-			ImGui::Dummy(ImVec2(a_w, ph));
+			ImGui::InvisibleButton("##palettepic", ImVec2(a_w, ph));  // (holds the mouse, so dragging here never drags the panel)
 			if (g_palettePic.srv) {
 				dl->AddImage(reinterpret_cast<ImTextureID>(g_palettePic.srv), p0, p0 + ImVec2(a_w, ph));
 			} else {
@@ -706,54 +797,124 @@ namespace Studio
 				dl->AddCircle(p0 + ImVec2(s.x * a_w, s.y * ph), blobR + 3.0f, Theme::Gold(), 0, U(2.0f));
 				if (s.mixed) {
 					const int n = s.Parts();
-					ImGui::SetTooltip("Your puddle (%d part%s)\nClick with another colour on the brush: mix it in\nClick with a clean brush: load it\nShift + click: load it without mixing\nCtrl + click: scrape it off",
+					ImGui::SetTooltip("Your puddle (%d part%s)\nClick with another colour on the brush: mix it in\nClick with a clean brush: load it\nShift + click: load it without mixing\nDrag: move it\nCtrl + click: scrape it off",
 						n, n == 1 ? "" : "s");
 				} else {
 					ImGui::SetTooltip("%s\nClick: load the brush with it", kPigments[std::min(hoverSpot, PaletteSpots::kCount - 1)].name);
 				}
 			}
+			// a spot was clicked (for a puddle: pressed and let go without dragging it)
+			auto spotClicked = [&](int a_i, bool a_shift) {
+				if (g_rag) {
+					Hint("Put the rag down and pick up a brush to load paint");
+				} else if (g_brush.type < 0) {
+					Hint("Pick up a brush first: click one below the palette");
+				} else {
+					auto& spot = g_spots[a_i];
+					if (spot.mixed && g_brush.Loaded() && !a_shift && ColourDistance(g_brush.color, spot.c) > 12) {
+						// the paint on the brush goes into the puddle, one part more; the brush takes the new mix
+						bool found = false;
+						for (auto& [col, n] : spot.parts) {
+							if (ColourDistance(col, g_brush.color) <= 6) {
+								n = std::min(n + 1, 99);
+								found = true;
+								break;
+							}
+						}
+						if (!found) {
+							spot.parts.push_back({ g_brush.color, 1 });
+						}
+						spot.Remix();
+						SaveSpots();
+						LoadColour(spot.c);
+						Hint(fmt::format("Mixed into the puddle ({} parts) - the brush has the new mix", spot.Parts()).c_str());
+					} else {
+						LoadColour(spot.c);
+					}
+				}
+			};
+
+			// puddles: press and drag to move one, press and let go to use it
+			static int    dragSpot = -1;
+			static bool   dragMoved = false;
+			static ImVec2 dragFrom{};
+			if (dragSpot >= static_cast<int>(g_spots.size())) {
+				dragSpot = -1;
+			}
+			if (dragSpot >= 0) {
+				if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+					const ImVec2 d = io.MousePos - dragFrom;
+					if (!dragMoved && d.x * d.x + d.y * d.y > 16.0f) {
+						dragMoved = true;
+					}
+					if (dragMoved) {
+						g_spots[dragSpot].x = std::clamp((io.MousePos.x - p0.x) / a_w, 0.03f, 0.97f);
+						g_spots[dragSpot].y = std::clamp((io.MousePos.y - p0.y) / ph, 0.03f, 0.97f);
+						ImGui::SetTooltip("Moving the puddle");
+					}
+				} else {
+					if (dragMoved) {
+						SaveSpots();
+					} else {
+						spotClicked(dragSpot, io.KeyShift);
+					}
+					dragSpot = -1;
+				}
+			}
+
 			if (click && overPalette) {
 				if (hoverSpot >= 0 && io.KeyCtrl && g_spots[hoverSpot].mixed) {
 					g_spots.erase(g_spots.begin() + hoverSpot);
 					SaveSpots();
+				} else if (hoverSpot >= 0 && g_spots[hoverSpot].mixed) {
+					dragSpot = hoverSpot;  // decided when the button comes up: a drag moves it, a click uses it
+					dragMoved = false;
+					dragFrom = io.MousePos;
 				} else if (hoverSpot >= 0) {
-				if (g_rag) {
-					Hint("Put the rag down and pick up a brush to load paint");
-				} else if (g_brush.type < 0) {
-						Hint("Pick up a brush first: click one below the palette");
-					} else {
-						auto& spot = g_spots[hoverSpot];
-						if (spot.mixed && g_brush.Loaded() && !io.KeyShift && ColourDistance(g_brush.color, spot.c) > 12) {
-							// the paint on the brush goes into the puddle, one part more; the brush takes the new mix
-							bool found = false;
-							for (auto& [col, n] : spot.parts) {
-								if (ColourDistance(col, g_brush.color) <= 6) {
-									n = std::min(n + 1, 99);
-									found = true;
-									break;
-								}
-							}
-							if (!found) {
-								spot.parts.push_back({ g_brush.color, 1 });
-							}
-							spot.Remix();
-							SaveSpots();
-							LoadColour(spot.c);
-							Hint(fmt::format("Mixed into the puddle ({} parts) - the brush has the new mix", spot.Parts()).c_str());
-						} else {
-							LoadColour(spot.c);
-						}
-					}
+					spotClicked(hoverSpot, io.KeyShift);
 				} else if (g_brush.Loaded()) {
 					const float x = (io.MousePos.x - p0.x) / a_w, y = (io.MousePos.y - p0.y) / ph;
 					if (static_cast<int>(g_spots.size()) - PaletteSpots::kCount >= kMaxMixed) {
-						Hint("The palette is full - Ctrl + click a mix to scrape it off");
+						Hint("The palette is full - Ctrl + click a puddle, or Clean the palette");
 					} else {
 						Spot spot{ x, y, g_brush.color, true };
 						spot.parts.push_back({ g_brush.color, 1 });
 						g_spots.push_back(std::move(spot));
 						SaveSpots();
 						Hint("Puddle put down - load another paint and click the puddle to mix it in");
+					}
+				}
+			}
+
+			// clean the palette: every puddle scraped off (the paints from the tubes stay)
+			{
+				int puddles = 0;
+				for (const auto& sp : g_spots) {
+					puddles += sp.mixed ? 1 : 0;
+				}
+				if (puddles > 0) {
+					const char*  label = "Clean the palette";
+					const ImVec2 ts = ImGui::CalcTextSize(label);
+					ImGui::SetCursorScreenPos(ImVec2(p0.x + a_w - ts.x - U(14.0f), ImGui::GetCursorScreenPos().y));
+					if (ImGui::SmallButton(label)) {
+						ImGui::OpenPopup("##cleanpalette");
+					}
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip("Scrape every puddle off the palette");
+					}
+					if (ImGui::BeginPopup("##cleanpalette")) {
+						ImGui::Text("Scrape all %d puddle%s off the palette?", puddles, puddles == 1 ? "" : "s");
+						if (ImGui::Button("Scrape them off")) {
+							g_spots.erase(std::remove_if(g_spots.begin(), g_spots.end(), [](const Spot& sp) { return sp.mixed; }), g_spots.end());
+							SaveSpots();
+							dragSpot = -1;
+							ImGui::CloseCurrentPopup();
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Keep them")) {
+							ImGui::CloseCurrentPopup();
+						}
+						ImGui::EndPopup();
 					}
 				}
 			}
@@ -792,7 +953,7 @@ namespace Studio
 			const float  cell = (a_w - U(70.0f)) / Paint::kBrushCount;
 			const float  rowH = U(96.0f);
 			const ImVec2 b0 = ImGui::GetCursorScreenPos();
-			ImGui::Dummy(ImVec2(a_w, rowH + ImGui::GetTextLineHeightWithSpacing()));
+			ImGui::InvisibleButton("##brushrow", ImVec2(a_w, rowH + ImGui::GetTextLineHeightWithSpacing()));
 			for (int i = 0; i < Paint::kBrushCount; ++i) {
 				const ImVec2 c0 = b0 + ImVec2(cell * i, 0);
 				const bool   hov = ImGui::IsMouseHoveringRect(c0, c0 + ImVec2(cell, rowH));
@@ -813,16 +974,7 @@ namespace Studio
 				if (hov) {
 					ImGui::SetTooltip("%s - %s", label, g_brush.type == i ? "click to put it down" : "click to pick it up");
 					if (click) {
-						g_rag = false;
-						const bool same = g_brush.type == i;
-						PutDownBrush();
-						if (!same) {
-							g_brush = g_rack[i];
-							g_brush.type = i;
-							if (!g_brush.Loaded()) {
-								Hint("Click a paint to load the brush");
-							}
-						}
+						PickBrush(i);
 					}
 				}
 			}
@@ -1097,6 +1249,9 @@ namespace Studio
 		g_lastCanvas = ImVec2(-1e9f, -1e9f);
 		g_closeUp = false;
 		g_worldZoom = false;
+		g_edits = g_editsSaved = 0;
+		g_hasLineFrom = false;
+		g_autosavedAt = ImGui::GetTime();
 		g_openedAt = ImGui::GetTime();
 		g_liveWarned = false;
 		// paint straight onto the canvas on the easel: it gets a texture of its own for this session,
@@ -1217,12 +1372,14 @@ namespace Studio
 				ImGui::BeginDisabled(!g_paint.CanUndo());
 				if (Theme::Button("Undo", ImVec2(w3, 0))) {
 					g_paint.Undo();
+					++g_edits;
 				}
 				ImGui::EndDisabled();
 				ImGui::SameLine();
 				ImGui::BeginDisabled(!g_paint.CanRedo());
 				if (Theme::Button("Redo", ImVec2(w3, 0))) {
 					g_paint.Redo();
+					++g_edits;
 				}
 				ImGui::EndDisabled();
 				ImGui::SameLine();
@@ -1296,6 +1453,7 @@ namespace Studio
 		}
 		if (ConfirmPopup("##clear", "Scrape all the paint off the canvas? (Undo can bring it back.)", "Scrape")) {
 			g_paint.ClearLayer(g_paint.Current());
+			++g_edits;
 		}
 		static int finishFocus = 0;
 		if (g_openFinish) {
@@ -1334,8 +1492,10 @@ namespace Studio
 		if (g_open && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !io.WantTextInput) {
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
 				g_paint.Undo();
+					++g_edits;
 			} else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
 				g_paint.Redo();
+					++g_edits;
 			}
 			if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
 				g_hideHud = !g_hideHud;
@@ -1349,6 +1509,31 @@ namespace Studio
 				}
 				if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
 					ToggleRag();
+				}
+				for (int i = 0; i < Paint::kBrushCount && i < 4; ++i) {
+					if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i), false)) {
+						PickBrush(i);
+					}
+				}
+				if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !io.KeyCtrl && g_brush.type >= 0) {
+					if (g_hasPrev) {  // back to the colour before
+						const Rgb now = g_brush.color;
+						const bool loaded = g_brush.Loaded();
+						g_brush.color = g_prevColour;
+						g_brush.load = 1.0f;
+						if (loaded) {
+							g_prevColour = now;
+						}
+					}
+				}
+				// the mouse's side buttons: back = undo, forward = redo
+				if (ImGui::IsMouseClicked(ImGuiMouseButton(3))) {
+					g_paint.Undo();
+					++g_edits;
+				}
+				if (ImGui::IsMouseClicked(ImGuiMouseButton(4))) {
+					g_paint.Redo();
+					++g_edits;
 				}
 				if (ImGui::IsKeyPressed(ImGuiKey_M, false) && g_closeUp) {
 					g_mirror = !g_mirror;
@@ -1386,6 +1571,9 @@ namespace Studio
 		// the cursor: over the canvas the brush's footprint takes its place; anywhere else it is the normal cursor
 		if (g_open && g_overCanvas && (g_brush.type >= 0 || g_rag) && !looking) {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+		}
+		if (g_open) {
+			AutosaveTick();
 		}
 		if (stepAway && g_open) {
 			StepAway();
