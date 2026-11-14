@@ -152,7 +152,8 @@ namespace Paint
 		int                       m_w = 0, m_h = 0;
 		std::vector<std::uint8_t> m_blank;
 		std::vector<std::uint8_t> m_grain;  // the canvas weave: 255 = a raised thread, 0 = the hollows between
-		std::vector<std::uint8_t> m_cover;  // how much the current stroke has covered each pixel
+		std::vector<std::uint8_t> m_cover;  // how much the current stroke has covered each pixel (as opacity)
+		std::vector<std::uint8_t> m_wet;    // how wet the paint is: fresh from a stroke, drying with each stroke after
 		std::vector<std::uint8_t> m_composite;
 		std::vector<Layer>        m_layers;
 		int                       m_current = 0;

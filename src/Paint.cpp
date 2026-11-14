@@ -130,6 +130,7 @@ namespace Paint
 		m_layers.clear();
 		m_layers.push_back({ "Underpainting", true, 1.0f, std::vector<std::uint8_t>(static_cast<std::size_t>(a_w) * a_h * 4, 0) });
 		MakeGrain();
+		m_wet.clear();  // a painting you come back to has dried
 		m_current = 0;
 		m_undo.clear();
 		m_redo.clear();
@@ -183,6 +184,7 @@ namespace Paint
 		m_current = 0;
 		m_undo.clear();
 		m_redo.clear();
+		m_wet.clear();
 		m_changed = true;
 		RecompositeAll();
 		return true;
@@ -382,6 +384,14 @@ namespace Paint
 		m_style = a_style;
 		m_style.body = std::clamp(m_style.body, 0.05f, 1.0f);
 		m_cover.assign(static_cast<std::size_t>(m_w) * m_h, 0);
+		// paint dries: what earlier strokes put down gets drier with every new stroke
+		if (m_wet.size() != m_cover.size()) {
+			m_wet.assign(m_cover.size(), 0);
+		} else {
+			for (auto& w : m_wet) {
+				w = static_cast<std::uint8_t>(w * 0.55f);
+			}
+		}
 		m_hasPrevDab = false;
 		m_stroking = true;
 		m_lastX = a_x;
@@ -435,6 +445,12 @@ namespace Paint
 	{
 		if (m_stroking && !m_moved) {
 			Dab(a_brush, m_lastX, m_lastY, m_firstPressure, m_dirX, m_dirY);  // a click without moving: one dab
+		}
+		// what this stroke painted is wet now
+		if (m_stroking && !m_style.lift && m_wet.size() == m_cover.size()) {
+			for (std::size_t i = 0; i < m_wet.size(); ++i) {
+				m_wet[i] = std::max(m_wet[i], m_cover[i]);
+			}
 		}
 		m_stroking = false;
 	}
@@ -547,9 +563,11 @@ namespace Paint
 				}
 			}
 		} else {
-			// ---- paint. Wet paint under the brush: what was on this layer before the stroke began (the
-			// undo snapshot). Lower layers count as dry - you paint back to front, letting each layer set.
+			// ---- paint. The paint under the brush is what was there before the stroke began (the undo
+			// snapshot); only paint that is still wet (from the last couple of strokes) mixes in - older
+			// paint has dried and new paint covers it.
 			const auto& before = m_undo.empty() ? layer : m_undo.back().px;
+			const bool  haveWet = m_wet.size() == static_cast<std::size_t>(m_w) * m_h;
 			float       under[3]{}, wet = 0.0f, wsum = 0.0f;
 			for (int k = 0; k < 5; ++k) {
 				const int sx = std::clamp(static_cast<int>(a_x + (k == 1 ? rAcross * 0.5f : k == 2 ? -rAcross * 0.5f : 0.0f)), 0, m_w - 1);
@@ -560,7 +578,7 @@ namespace Paint
 					under[c] += before[i + c] * a;
 				}
 				wsum += a;
-				wet += std::sqrt(a);  // even a thin film of wet paint mixes in
+				wet += haveWet ? m_wet[static_cast<std::size_t>(sy) * m_w + sx] / 255.0f : 0.0f;
 			}
 			wet /= 5.0f;
 			Rgb deposit = a_brush.color;
@@ -568,9 +586,10 @@ namespace Paint
 				const Rgb u{ static_cast<std::uint8_t>(under[0] / wsum), static_cast<std::uint8_t>(under[1] / wsum), static_cast<std::uint8_t>(under[2] / wsum) };
 				if ((m_dabs & 3) == 0) {
 					// the brush picks up some of the wet paint it drags through
-					a_brush.color = Spectral::Mix(a_brush.color, u, 0.12f * wet);
+					a_brush.color = Spectral::Mix(a_brush.color, u, 0.08f * wet);
 				}
-				deposit = Spectral::Mix(a_brush.color, u, 0.6f * wet * (1.0f - 0.3f * p));
+				// a heavy hand pushes its own paint through; a light one blends with the wet paint
+				deposit = Spectral::Mix(a_brush.color, u, 0.5f * wet * (1.0f - 0.5f * p));
 			}
 			++m_dabs;
 
@@ -585,13 +604,16 @@ namespace Paint
 						continue;
 					}
 					const std::size_t pi = static_cast<std::size_t>(y) * m_w + x;
-					const float       cov = m_cover[pi];
-					const float       room = std::max(0.0f, cap - cov) / 255.0f;
-					a = std::min(a, room);
+					// coverage builds like layers of paint (1 - (1-a1)(1-a2)...), capped by the paint's body
+					const float cov = m_cover[pi] / 255.0f, capA = cap / 255.0f;
+					if (cov >= capA - 0.002f) {
+						continue;
+					}
+					a = std::min(a, (capA - cov) / std::max(1e-3f, 1.0f - cov));
 					if (a <= 0.002f) {
 						continue;
 					}
-					m_cover[pi] = static_cast<std::uint8_t>(std::min(255.0f, cov + a * 255.0f));
+					m_cover[pi] = static_cast<std::uint8_t>(std::min(255.0f, (cov + a * (1.0f - cov)) * 255.0f + 0.5f));
 					const std::size_t i = pi * 4;
 					const float       da = layer[i + 3] / 255.0f;
 					if (lockAlpha && da <= 0.0f) {
@@ -672,6 +694,7 @@ namespace Paint
 		std::swap(m_w, m_h);
 		m_blank = a_newBlank;
 		MakeGrain();
+		m_wet.clear();
 		m_undo.clear();
 		m_redo.clear();
 		m_changed = true;
