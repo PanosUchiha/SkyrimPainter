@@ -539,6 +539,106 @@ namespace Studio
 			}
 		}
 
+		// The brushes on the rack, drawn: a lacquered handle, a metal ferrule and the hairs, each brush its own shape.
+		// Lies diagonally, handle bottom left, tip top right, centred on a_c; a_len = the whole brush.
+		void DrawBrushArt(ImDrawList* a_dl, int a_type, const ImVec2& a_c, float a_len)
+		{
+			const ImVec2 u(0.866f, -0.5f), n(0.5f, 0.866f);  // along the brush (to the tip), across it
+			const ImVec2 base = a_c - u * (a_len * 0.5f);
+			auto P = [&](float t, float w) { return base + u * (t * a_len) + n * (w * a_len); };
+			auto quad = [&](float t0, float w0, float t1, float w1, ImU32 c) {
+				const ImVec2 q[4] = { P(t0, -w0), P(t1, -w1), P(t1, w1), P(t0, w0) };
+				a_dl->AddConvexPolyFilled(q, 4, c);
+			};
+			struct Look
+			{
+				ImU32 handle, handleHi;
+				float ferruleEnd;  // width of the ferrule at the hairs (flattened for flats, filberts and fans)
+			};
+			static const Look kLook[5] = {
+				{ IM_COL32(58, 52, 48, 255), IM_COL32(150, 140, 130, 255), 0.022f },  // detail: black lacquer, a fine round ferrule
+				{ IM_COL32(120, 36, 30, 255), IM_COL32(190, 90, 80, 255), 0.030f },  // round (normally the picture)
+				{ IM_COL32(128, 40, 32, 255), IM_COL32(196, 96, 82, 255), 0.050f },  // filbert: oxblood
+				{ IM_COL32(34, 64, 46, 255), IM_COL32(96, 140, 110, 255), 0.058f },  // flat: bottle green
+				{ IM_COL32(150, 108, 60, 255), IM_COL32(214, 176, 120, 255), 0.040f }, // fan: bare wood
+			};
+			const Look& k = kLook[std::clamp(a_type, 0, 4)];
+			// the handle: thin at the end, swelling before the ferrule
+			quad(0.00f, 0.014f, 0.30f, 0.024f, k.handle);
+			quad(0.30f, 0.024f, 0.56f, 0.026f, k.handle);
+			a_dl->AddCircleFilled(P(0.0f, 0.0f), a_len * 0.014f, k.handle, 12);
+			a_dl->AddLine(P(0.04f, -0.008f), P(0.54f, -0.014f), k.handleHi, std::max(1.0f, a_len * 0.006f));
+			// the ferrule: nickel, crimped flat for the flat-bristled brushes
+			const ImU32 metal = IM_COL32(176, 178, 182, 255), metalHi = IM_COL32(236, 238, 240, 255), metalLo = IM_COL32(110, 112, 118, 255);
+			quad(0.56f, 0.026f, 0.70f, k.ferruleEnd, metal);
+			a_dl->AddLine(P(0.57f, -0.012f), P(0.69f, -k.ferruleEnd * 0.5f), metalHi, std::max(1.0f, a_len * 0.006f));
+			a_dl->AddLine(P(0.60f, -0.026f), P(0.60f, 0.026f), metalLo, 1.0f);  // the crimp
+			// the hairs
+			const ImU32 hog = IM_COL32(226, 212, 178, 255), hogLo = IM_COL32(170, 150, 112, 255);
+			const ImU32 sable = IM_COL32(118, 74, 40, 255), sableTip = IM_COL32(52, 32, 20, 255);
+			switch (a_type) {
+			case 0:  // detail: a long fine point of sable
+				quad(0.70f, 0.020f, 0.82f, 0.018f, sable);
+				{
+					const ImVec2 tri[3] = { P(0.82f, -0.018f), P(1.0f, 0.0f), P(0.82f, 0.018f) };
+					a_dl->AddConvexPolyFilled(tri, 3, sable);
+					const ImVec2 tip[3] = { P(0.93f, -0.007f), P(1.0f, 0.0f), P(0.93f, 0.007f) };
+					a_dl->AddConvexPolyFilled(tip, 3, sableTip);
+				}
+				break;
+			case 1:  // round: a full belly to a point
+				quad(0.70f, 0.030f, 0.80f, 0.036f, sable);
+				{
+					const ImVec2 tri[3] = { P(0.80f, -0.036f), P(0.97f, 0.0f), P(0.80f, 0.036f) };
+					a_dl->AddConvexPolyFilled(tri, 3, sable);
+				}
+				break;
+			case 2:  // filbert: flat hog hairs with an oval end
+				{
+					ImVec2 pts[16];
+					int    np = 0;
+					pts[np++] = P(0.70f, -0.050f);
+					for (int i = 0; i <= 12; ++i) {
+						const float a = -1.5708f + 3.1416f * i / 12.0f;
+						pts[np++] = P(0.86f + std::cos(a) * 0.10f, std::sin(a) * 0.054f);
+					}
+					pts[np++] = P(0.70f, 0.050f);
+					a_dl->AddConvexPolyFilled(pts, np, hog);
+					for (int i = -1; i <= 1; ++i) {
+						a_dl->AddLine(P(0.72f, i * 0.025f), P(0.93f, i * 0.022f), hogLo, 1.0f);
+					}
+				}
+				break;
+			case 3:  // flat: a square block of hog hair
+				quad(0.70f, 0.058f, 0.97f, 0.064f, hog);
+				for (int i = -2; i <= 2; ++i) {
+					a_dl->AddLine(P(0.72f, i * 0.024f), P(0.97f, i * 0.026f), hogLo, 1.0f);
+				}
+				a_dl->AddLine(P(0.97f, -0.064f), P(0.97f, 0.064f), hogLo, std::max(1.0f, a_len * 0.006f));
+				break;
+			default:  // fan: hairs spread in a half circle
+				{
+					const ImVec2 o = P(0.70f, 0.0f);
+					ImVec2       pts[18];
+					int          np = 0;
+					pts[np++] = P(0.70f, -0.040f);
+					for (int i = 0; i <= 14; ++i) {
+						const float  a = -1.05f + 2.1f * i / 14.0f;  // +-60 degrees
+						const ImVec2 d = u * std::cos(a) + n * std::sin(a);
+						pts[np++] = o + d * (a_len * 0.26f);
+					}
+					pts[np++] = P(0.70f, 0.040f);
+					a_dl->AddConvexPolyFilled(pts, np, hog);
+					for (int i = 0; i <= 8; ++i) {
+						const float  a = -1.0f + 2.0f * i / 8.0f;
+						const ImVec2 d = u * std::cos(a) + n * std::sin(a);
+						a_dl->AddLine(o + d * (a_len * 0.04f), o + d * (a_len * 0.25f), hogLo, 1.0f);
+					}
+				}
+				break;
+			}
+		}
+
 		// ---- panels
 		Paint::Brush& Held() { return g_rag ? g_ragHand : g_brush; }
 
@@ -880,7 +980,11 @@ namespace Studio
 				const bool   hov = cellFrame(c0, cell, kShort[i], g_brush.type == i, kKey[i]);
 				{
 					const float len = cell * (0.8f + 0.06f * i);
-					DrawBrushPic(dl, c0 + ImVec2(cell * 0.5f + len * 0.4f, rowH * 0.5f - len * 0.24f), len, nullptr);
+					if (i == 1) {  // the round brush keeps its picture
+						DrawBrushPic(dl, c0 + ImVec2(cell * 0.5f + len * 0.4f, rowH * 0.5f - len * 0.24f), len, nullptr);
+					} else {
+						DrawBrushArt(dl, i, c0 + ImVec2(cell * 0.5f, rowH * 0.5f + U(6)), std::min(cell * 0.92f, rowH * 1.3f));
+					}
 				}
 				if (hov) {
 					static constexpr const char* kWhat[5] = { "fine lines and small details", "an all-round brush", "soft, rounded strokes and blending",
