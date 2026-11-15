@@ -1028,7 +1028,7 @@ namespace Studio
 					dl->AddTriangleFilled(m + ImVec2(sx * 0.05f, -U(2)), m + ImVec2(sx, -sy), m + ImVec2(sx * 0.05f, U(3)), IM_COL32(190, 192, 196, 255));
 				}
 				if (hov) {
-					ImGui::SetTooltip("Palette knife  [key 7]\nLoaded with paint: flat, sharp-edged slabs of thick paint.\nClean (wiped on the rag): scrapes paint off, back to the canvas.");
+					ImGui::SetTooltip("Palette knife  [key 7]\nLoaded with paint: flat, sharp-edged slabs of solid colour.\nClean (wiped on the rag): scrapes paint off, back to the canvas.");
 					if (click) {
 						PickBrush(Paint::kKnife);
 					}
@@ -1347,7 +1347,6 @@ namespace Studio
 							{ "Your colours", "Every colour you paint with appears in the row under the palette. Click one to load it again." },
 							{ "Paint", "Drag on the canvas standing on the easel with the left mouse button - the paint goes straight onto it. Press C for a flat close-up instead." },
 							{ "Clean the brush", "Click the rag." },
-							{ "Thick paint", "Full-bodied paint and a heavy touch leave ridges of paint on the canvas that catch the light, bristle marks and all. Thin paint stays flat. The rag and a clean brush flatten it again." },
 							{ "Varnish", "When you finish, choose Matte, Satin or Gloss: how much the finished painting shines in the light." },
 							{ "Selling", "General goods merchants and innkeepers buy finished paintings. The price comes from the painting - how much of the canvas is painted, the detail and the range of colours - and from the work that went into it: the time spent painting and the number of strokes. A quick scribble fetches a few coins; a full, rich painting worked on for 45 minutes or more, a few hundred. The Finish window shows what it would fetch. A sold painting is gone for good - the merchant won't sell it back." },
 							{ "Keeping paintings", "A painting lasts as long as it exists somewhere: in your pack, hung on a wall, on an easel, in a chest or lying where you dropped it. Sell it, scrape it off or destroy it and it's gone - its picture is deleted the next time you save." },
@@ -1361,7 +1360,7 @@ namespace Studio
 							{ "Wide flat", "Skies, washes, large areas. It lies across the way you move it." },
 							{ "Fan brush", "A few bristles spread wide: flick it for grass, leaves, fur and wispy clouds." },
 							{ "Charcoal", "Sketch your drawing first, the way painters do. Dry and grainy, it doesn't mix with paint and is easy to paint over; drag a clean brush through it to smudge it." },
-							{ "Palette knife", "Loaded with paint, it lays down flat, sharp-edged slabs of thick paint - rocks, walls, a heavy sky. Wipe it on the rag and it scrapes paint off, back to the canvas." },
+							{ "Palette knife", "Loaded with paint, it lays down flat, sharp-edged slabs of solid colour - rocks, walls, a heavy sky. Wipe it on the rag and it scrapes paint off, back to the canvas." },
 							{ "1 - 7", "1-5 the brushes, 6 charcoal, 7 the palette knife (press again to put it down)." },
 							{ "[  and  ]", "A smaller or larger brush of the same kind." },
 							{ "X", "Back to the colour you had before - press again to swap back." },
