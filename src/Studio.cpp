@@ -844,28 +844,6 @@ namespace Studio
 			auto*       dl = ImGui::GetWindowDrawList();
 			const bool  click = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
 
-			// ---- what to do next, in one line, at the top
-			{
-				const char* next = g_rag                             ? "Drag the rag over the canvas to lift paint off."
-				                   : g_brush.type < 0                 ? "Start here: pick up a brush or a tool (keys 1-7)."
-				                   : g_brush.type == Paint::kCharcoal ? "Sketch on the canvas - charcoal needs no paint."
-				                   : g_brush.type == Paint::kKnife && !g_brush.Loaded() ? "Load the knife with paint - or drag it clean over the canvas to scrape paint off."
-				                   : !g_brush.Loaded()                ? "Now click a paint on the palette to load your brush."
-				                                                      : "Paint on the canvas. Mix on the palette; wipe the brush on the rag.";
-				const ImVec2 n0 = ImGui::GetCursorScreenPos();
-				const float  th = ImGui::CalcTextSize(next, nullptr, false, a_w - U(16)).y;
-				dl->AddRectFilled(n0, n0 + ImVec2(a_w, th + U(12)), IM_COL32(60, 44, 30, 210), U(6));
-				dl->AddRectFilled(n0, n0 + ImVec2(U(4), th + U(12)), Theme::Gold(), U(2));
-				ImGui::SetCursorScreenPos(n0 + ImVec2(U(10), U(6)));
-				ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(244, 232, 205, 255));
-				ImGui::PushTextWrapPos(n0.x + a_w - U(6));
-				ImGui::TextUnformatted(next);
-				ImGui::PopTextWrapPos();
-				ImGui::PopStyleColor();
-				ImGui::SetCursorScreenPos(n0 + ImVec2(0, th + U(12)));
-				ImGui::Dummy(ImVec2(a_w, U(6)));
-			}
-
 			// ---- brushes (top row), then charcoal, the palette knife and the rag (the tools row)
 			Theme::SectionLabel("1   Pick up a tool");
 			constexpr int kRowBrushes = 5;  // the four brushes and the fan
@@ -1269,7 +1247,7 @@ namespace Studio
 							{ "Varnish", "When you finish, choose Matte, Satin or Gloss: how much the finished painting shines in the light." },
 							{ "Selling", "General goods merchants and innkeepers buy finished paintings. The price comes from the painting - how much of the canvas is painted, the detail and the range of colours - and from the work that went into it: the time spent painting and the number of strokes. A quick scribble fetches a few coins; a full, rich painting worked on for 45 minutes or more, a few hundred. The Finish window shows what it would fetch. A sold painting is gone for good - the merchant won't sell it back." },
 							{ "Keeping paintings", "A painting lasts as long as it exists somewhere: in your pack, hung on a wall, on an easel, in a chest or lying where you dropped it. Sell it, scrape it off or destroy it and it's gone - its picture is deleted the next time you save." },
-							{ "Finish", "Finish painting names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later. Your work is also saved every few minutes while you paint." },
+							{ "Finish", "Finish names it and takes it off the easel as a painting you can hang. Step away (Esc) leaves it on the easel for later. Your work is also saved every few minutes while you paint." },
 						});
 					GuideTab("Brushes", "Each brush leaves its own mark. The outline on the canvas shows where it will touch and how big it is.",
 						{
@@ -1311,7 +1289,6 @@ namespace Studio
 							{ "Middle mouse / Space", "Hold and drag to move around a zoomed-in canvas." },
 							{ "M", "In the close-up: see the painting in a mirror. Painters do this to catch mistakes in the drawing." },
 							{ "Step back / Ctrl+0", "The whole canvas again, the right way round." },
-							{ "Reset", "Puts the panel and the close-up back where they started." },
 						});
 					GuideTab("Keys", "",
 						{
@@ -1580,7 +1557,7 @@ namespace Studio
 					ImGui::SetTooltip("Scrape all the paint off the canvas");
 				}
 
-				if (Theme::Button("Finish painting", ImVec2(w2, 0), true)) {
+				if (Theme::Button("Finish", ImVec2(w2, 0), true)) {
 					g_openFinish = true;
 				}
 				ImGui::SameLine();
@@ -1591,13 +1568,6 @@ namespace Studio
 					ImGui::SetTooltip("Leave the painting on the easel and come back to it later (Esc)");
 				}
 
-				if (Theme::Button(g_closeUp ? "Easel" : "Close-up", ImVec2(w3, 0))) {
-					g_closeUp = !g_closeUp;
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("%s", g_closeUp ? "Paint straight onto the canvas standing on the easel (C)" : "A flat close-up of the canvas, to zoom in on details or see it in a mirror (C)");
-				}
-				ImGui::SameLine();
 				if (Theme::Button(g_guide ? "Close guide" : "Guide", ImVec2(w3, 0))) {
 					g_guide = !g_guide;
 				}
@@ -1605,19 +1575,9 @@ namespace Studio
 					ImGui::SetTooltip("How everything works (F1)");
 				}
 				ImGui::SameLine();
-				if (Theme::Button("Reset", ImVec2(w3, 0))) {
-					g_placeFrames = 3;
-					g_canvasPlace = true;
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Put the panel (and the close-up) back in place");
-				}
-				ImGui::AlignTextToFramePadding();
-				ImGui::TextUnformatted("HUD size");
-				ImGui::SameLine();
 				float size = g_ui * 100.0f;
 				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-				if (ImGui::SliderFloat("##hudsize", &size, 60.0f, 120.0f, "%.0f%%")) {
+				if (ImGui::SliderFloat("##hudsize", &size, 60.0f, 120.0f, "HUD size %.0f%%")) {
 					g_ui = std::clamp(size / 100.0f, 0.6f, 1.2f);
 				}
 				if (ImGui::IsItemDeactivatedAfterEdit()) {
