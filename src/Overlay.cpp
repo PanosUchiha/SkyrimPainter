@@ -95,6 +95,34 @@ namespace Overlay
 		float                                 g_displayH = 1080.0f;
 		bool                                  g_centerMouse = false;
 
+		void SetStudioActive(bool a_active)
+		{
+			const bool wasActive = g_studioActive.exchange(a_active);
+			if (wasActive == a_active) {
+				return;
+			}
+			if (const auto* tasks = SKSE::GetTaskInterface()) {
+				tasks->AddTask([a_active] {
+					auto* eventSource = SKSE::GetModCallbackEventSource();
+					if (!eventSource) {
+						spdlog::warn("Could not send SkyrimPainter studio event: SKSE mod event source is unavailable");
+						return;
+					}
+
+					SKSE::ModCallbackEvent event{};
+					event.eventName = a_active ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed";
+					event.strArg = "";
+					event.numArg = a_active ? 1.0f : 0.0f;
+					event.sender = nullptr;
+					eventSource->SendEvent(&event);
+
+					spdlog::info("Sent Papyrus mod event: {}", a_active ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed");
+				});
+			} else {
+				spdlog::warn("Could not queue SkyrimPainter studio event: SKSE task interface is unavailable");
+			}
+		}
+
 		// True when another menu has the screen (inventory, map, console, dialogue, a mod's menu...).
 		bool OtherMenuOpen()
 		{
@@ -119,7 +147,7 @@ namespace Overlay
 			g_wantOpen = a_open;
 			if (!a_open) {
 				g_screen = Screen::None;
-				g_studioActive = false;
+				SetStudioActive(false);
 				g_look = false;
 				Menus::Release();
 			} else {
@@ -813,30 +841,7 @@ namespace Overlay
 		} else {
 			DrainInput();
 		}
-		const bool studioActive = g_open && g_screen == Screen::Studio;
-		const bool studioWasActive = g_studioActive.exchange(studioActive);
-		if (studioActive != studioWasActive) {
-			if (const auto* tasks = SKSE::GetTaskInterface()) {
-				tasks->AddTask([studioActive] {
-					auto* eventSource = SKSE::GetModCallbackEventSource();
-					if (!eventSource) {
-						spdlog::warn("Could not send SkyrimPainter studio event: SKSE mod event source is unavailable");
-						return;
-					}
-
-					SKSE::ModCallbackEvent event{};
-					event.eventName = studioActive ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed";
-					event.strArg = "";
-					event.numArg = studioActive ? 1.0f : 0.0f;
-					event.sender = nullptr;
-					eventSource->SendEvent(&event);
-
-					spdlog::info("Sent Papyrus mod event: {}", studioActive ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed");
-				});
-			} else {
-				spdlog::warn("Could not queue SkyrimPainter studio event: SKSE task interface is unavailable");
-			}
-		}
+		SetStudioActive(g_open && g_screen == Screen::Studio);
 		if (!g_studioActive) {
 			g_look = false;
 		}
