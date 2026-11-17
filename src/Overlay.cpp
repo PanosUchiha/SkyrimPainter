@@ -813,7 +813,30 @@ namespace Overlay
 		} else {
 			DrainInput();
 		}
-		g_studioActive = g_open && g_screen == Screen::Studio;
+		const bool studioActive = g_open && g_screen == Screen::Studio;
+		const bool studioWasActive = g_studioActive.exchange(studioActive);
+		if (studioActive != studioWasActive) {
+			if (const auto* tasks = SKSE::GetTaskInterface()) {
+				tasks->AddTask([studioActive] {
+					auto* eventSource = SKSE::GetModCallbackEventSource();
+					if (!eventSource) {
+						spdlog::warn("Could not send SkyrimPainter studio event: SKSE mod event source is unavailable");
+						return;
+					}
+
+					SKSE::ModCallbackEvent event{};
+					event.eventName = studioActive ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed";
+					event.strArg = "";
+					event.numArg = studioActive ? 1.0f : 0.0f;
+					event.sender = nullptr;
+					eventSource->SendEvent(&event);
+
+					spdlog::info("Sent Papyrus mod event: {}", studioActive ? "SkyrimPainter_StudioOpened" : "SkyrimPainter_StudioClosed");
+				});
+			} else {
+				spdlog::warn("Could not queue SkyrimPainter studio event: SKSE task interface is unavailable");
+			}
+		}
 		if (!g_studioActive) {
 			g_look = false;
 		}
